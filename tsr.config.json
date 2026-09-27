@@ -1,0 +1,9 @@
+{
+  "routesDirectory": "./src/routes",
+  "generatedRouteTree": "./src/routeTree.gen.js",
+  "disableTypes": true,
+  "routeTreeFileHeader": [
+    "/* eslint-disable */",
+    "// noinspection JSUnusedGlobalSymbols"
+  ]
+}

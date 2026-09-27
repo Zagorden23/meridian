@@ -1,0 +1,23 @@
+node_modules
+.output
+.tanstack
+
+# Secrets — never commit. Copy .env.example to .env locally and set real
+# values in the hosting provider's dashboard.
+.env
+.env.*
+!.env.example
+
+# Build artifacts, logs, local caches
+dist
+*.log
+npm-debug.log*
+.screenshots-cache
+tmp
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
