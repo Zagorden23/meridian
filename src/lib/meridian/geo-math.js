@@ -88,3 +88,56 @@ export function arcAltitude(routeKm, globeRadius = 1, maxLift = 0.32) {
   const t = Math.min(1, routeKm / 12000);
   return globeRadius * (1 + 0.04 + maxLift * Math.sin((Math.PI / 2) * t));
 }
+
+// --- Coordinate-as-search-query ---------------------------------------------
+// Accepts what a human actually types:
+//   "28.6139,77.2090"  "28.6139 77.2090"  "28.6139, 77.2090"
+//   "28°36'51"N 77°12'32"E"  "28°36'51" N, 77°12'32" E"  "-33.865, 151.2094 S"
+// Returns { lat, lon } clamped-validated, or null when the text is not a
+// coordinate pair (then normal place search applies). Never throws.
+const DMS_RE = /^(\d{1,3})[°˚º]\s*(\d{1,2}(?:\.\d+)?)?['′ʹ]?\s*(\d{1,2}(?:\.\d+)?)?["″]?\s*([NSEW])?\s*[,;]?\s*(\d{1,3})[°˚º]\s*(\d{1,2}(?:\.\d+)?)?['′ʹ]?\s*(\d{1,2}(?:\.\d+)?)?["″]?\s*([NSEW])?$/i;
+
+const DECIMAL_RE = /^(-?\d{1,3}(?:\.\d+)?)\s*[°˚º]?\s*([NSEW])?\s*[,;\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*[°˚º]?\s*([NSEW])?$/i;
+
+function dmsToDecimal(deg, min = 0, sec = 0, hemi = "") {
+  const dec = Number(deg) + Number(min) / 60 + Number(sec) / 3600;
+  const h = String(hemi).toUpperCase();
+  if (h === "S" || h === "W") return -Math.abs(dec);
+  if (h === "N" || h === "E") return Math.abs(dec);
+  return dec;
+}
+
+export function parseCoordinateQuery(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw || raw.length > 80) return null;
+  if (!/[\d]/.test(raw) || !(/[°˚º'′"″]/.test(raw) || /[,\s]/.test(raw))) return null;
+
+  const dms = raw.match(DMS_RE);
+  if (dms) {
+    const lat = dmsToDecimal(dms[1], dms[2] ?? 0, dms[3] ?? 0, dms[4] ?? "");
+    const lon = dmsToDecimal(dms[5], dms[6] ?? 0, dms[7] ?? 0, dms[8] ?? "");
+    if (validateLatLon(lat, lon)) return { lat, lon, format: "DMS" };
+  }
+
+  const dec = raw.match(DECIMAL_RE);
+  if (dec) {
+    let lat = Number(dec[1]);
+    let lon = Number(dec[3]);
+    const h1 = (dec[2] ?? "").toUpperCase();
+    const h2 = (dec[4] ?? "").toUpperCase();
+    if (h1 === "S") lat = -Math.abs(lat);
+    if (h1 === "N") lat = Math.abs(lat);
+    if (h2 === "W") lon = -Math.abs(lon);
+    if (h2 === "E") lon = Math.abs(lon);
+    if (validateLatLon(lat, lon)) return { lat, lon, format: "DECIMAL" };
+  }
+
+  // Bare "lat, lon" with no symbols — the most common form.
+  const parts = raw.split(/[,;]+|\s+/).filter(Boolean);
+  if (parts.length === 2 && parts.every((p) => /^-?\d{1,3}(\.\d+)?$/.test(p))) {
+    const lat = Number(parts[0]);
+    const lon = Number(parts[1]);
+    if (validateLatLon(lat, lon)) return { lat, lon, format: "DECIMAL" };
+  }
+  return null;
+}

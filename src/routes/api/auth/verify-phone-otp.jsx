@@ -19,7 +19,7 @@ export const Route = createFileRoute("/api/auth/verify-phone-otp")({
           await consumeOtp(request, phone, body.code);
           await connectMongo();
           await ensureAuthIndexes().catch(() => {});
-          let user = await User().findOne({ phone });
+          let user = await User().findOne({ phone }).select("+passwordHash +passwordSalt");
           let created = false;
           if (!user) {
             user = await User().create({

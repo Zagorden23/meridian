@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { checkedOutputPath, checkedUrl } from "./browser-guard.mjs";
 import { computeBrandWarnings } from "./brand-check.mjs";
@@ -146,7 +147,17 @@ try {
     };
   }
 
-  const brandWarnings = computeBrandWarnings({ hasCanvas: viewports.desktop.hasCanvas });
+  // brand-check resolves paths from the workspace root, which is /workspace on
+  // Linux CI but the repo's own directory elsewhere. Derive it from this file
+  // (scripts/ sits at the repo root) instead of trusting the sandbox default,
+  // otherwise a Windows checkout looks for /workspace/public/og.jpg, finds
+  // nothing, and reports a missing share card that is right there on disk.
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const brandWarnings = computeBrandWarnings({
+    hasCanvas: viewports.desktop.hasCanvas,
+    workspaceRoot: repoRoot,
+  });
+
   // Only a dev server answers /__app-env, so smoking the built output reads as
   // indeterminate — report a divergence, never the absence of an observation.
   const authWarnings = authInvariantWarnings(

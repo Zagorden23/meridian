@@ -31,7 +31,7 @@ export function sendError(err, cookies = []) {
 export function withRateLimit(key, opts) {
   try {
     rateLimit(key, opts);
-  } catch (e) {
+  } catch {
     const err = new Error("Too many attempts. Please wait and try again.");
     err.status = 429;
     err.code = "RATE_LIMITED";

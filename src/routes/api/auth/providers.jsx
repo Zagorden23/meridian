@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { sendData, sendError } from "@/lib/meridian/auth-route.js";
-import { emailConfigured, providerStatus, smsConfigured } from "@/lib/meridian/auth.js";
+import { emailConfigured, passwordConfigured, providerStatus, smsConfigured } from "@/lib/meridian/auth.js";
 
 // Public capability map — flags only, never secrets. The auth UI renders
 // configured providers as live buttons and unconfigured ones as disabled
@@ -12,6 +12,10 @@ export const Route = createFileRoute("/api/auth/providers")({
         try {
           return sendData({
             oauth: providerStatus(),
+            password: {
+              configured: passwordConfigured(),
+              missing: passwordConfigured() ? [] : ["MONGODB_URI"],
+            },
             emailOtp: {
               configured: emailConfigured(),
               missing: emailConfigured() ? [] : ["EMAIL_PROVIDER_KEY", "EMAIL_FROM"],

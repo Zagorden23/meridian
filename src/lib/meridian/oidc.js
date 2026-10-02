@@ -11,6 +11,7 @@
 // Nothing here is optional and nothing here is faked: if a provider's keys
 // cannot be fetched, or a claim does not match, the sign-in fails with an
 // honest error instead of falling back to an unverified identity.
+import "./load-env.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { httpError } from "./api-envelope.js";
 

@@ -1,14 +1,14 @@
 // Global search: "Search anywhere..." with categorized autocomplete.
 // Ranking comes from the backend (exact → normalized → capital → population).
 import { useEffect, useRef, useState } from "react";
-import { Plane, Search, Building2, MapPin, Flag } from "lucide-react";
+import { Plane, Search, Building2, MapPin, Flag, Compass } from "lucide-react";
 import { api } from "@/lib/meridian/api-client.js";
 import { useMeridianStore } from "@/store/meridian-store.js";
 import { useGlobeStore } from "@/store/globe-store.js";
 import { recordHistory } from "@/lib/meridian/favorites.js";
 import { cn } from "@/lib/utils";
 
-const KIND_ICON = { CITY: MapPin, COUNTRY: Flag, AIRPORT: Plane, STATE: Building2 };
+const KIND_ICON = { CITY: MapPin, COUNTRY: Flag, AIRPORT: Plane, STATE: Building2, PLACE: MapPin, COORDINATES: Compass };
 
 function coordsOf(hit) {
   const lat = hit.latitude ?? hit.lat;
@@ -77,7 +77,7 @@ export function SearchBar() {
       name: hit.name,
       lat: c?.lat,
       lon: c?.lon,
-      country: hit.countryId ?? hit.country ?? null,
+      country: hit.countryId ?? hit.country ?? hit.countryName ?? null,
       raw: hit,
     };
     selectLocation(loc);
@@ -141,7 +141,11 @@ export function SearchBar() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-fg">{hit.name}</span>
                     <span className="block truncate text-xs text-subtle">
-                      {hit.kind === "AIRPORT" ? `${hit.iata ?? ""} ${hit.icao ?? ""}`.trim() : hit.countryId ?? ""}
+                      {hit.kind === "AIRPORT"
+                        ? `${hit.iata ?? ""} ${hit.icao ?? ""}`.trim()
+                        : hit.kind === "COORDINATES"
+                          ? "Go to coordinates"
+                          : hit.countryName ?? hit.countryId ?? ""}
                     </span>
                   </span>
                   <span className="text-[10px] uppercase tracking-label text-subtle">{hit.kind}</span>

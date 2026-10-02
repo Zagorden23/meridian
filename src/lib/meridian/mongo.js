@@ -6,6 +6,7 @@
 // flightTracks, weatherSnapshots) use TTL retention so live data cannot grow
 // unbounded. All helpers are server-only and degrade to null when no URI is
 // configured, letting the SQL/PGLite fallback keep the app running.
+import "./load-env.js";
 import mongoose from "mongoose";
 
 const uri = () => {

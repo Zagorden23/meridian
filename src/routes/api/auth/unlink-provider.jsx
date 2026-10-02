@@ -18,25 +18,35 @@ export const Route = createFileRoute("/api/auth/unlink-provider")({
           }
           const body = await readJson(request);
           const provider = String(body.provider ?? "");
-          if (!OAUTH_PROVIDERS[provider] && provider !== "email" && provider !== "phone") {
+          if (!OAUTH_PROVIDERS[provider] && provider !== "email" && provider !== "phone" && provider !== "password") {
             const err = new Error("Unknown provider.");
             err.status = 400; err.code = "UNKNOWN_PROVIDER";
             throw err;
           }
-          const user = await User().findById(sess.user.id);
+          const user = await User().findById(sess.user.id).select("+passwordHash +passwordSalt");
           if (!user) {
             const err = new Error("Account not found.");
             err.status = 404; err.code = "NOT_FOUND";
             throw err;
           }
           const remaining = (user.authProviders ?? []).filter((p) => p.provider !== provider);
-          const hasPasswordless = user.email || user.phone;
-          if (remaining.length === 0 && !hasPasswordless) {
+          // Commercial guard: never strand an account with zero ways back in.
+          // A remaining OAuth/email/phone provider is enough; otherwise a
+          // verified email/phone or a password credential must stay.
+          const hasOtherMethod = remaining.length > 0
+            || Boolean(user.passwordHash && provider !== "password")
+            || Boolean(user.emailVerified && provider !== "email")
+            || Boolean(user.phoneVerified && provider !== "phone");
+          if (!hasOtherMethod) {
             const err = new Error("Keep at least one sign-in method.");
             err.status = 400; err.code = "LAST_PROVIDER";
             throw err;
           }
           user.authProviders = remaining;
+          if (provider === "password") {
+            user.passwordHash = undefined;
+            user.passwordSalt = undefined;
+          }
           user.updatedAt = new Date();
           await user.save();
           return sendData({ user: publicUser(user) });

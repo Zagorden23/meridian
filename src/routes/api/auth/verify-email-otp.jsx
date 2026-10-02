@@ -19,7 +19,7 @@ export const Route = createFileRoute("/api/auth/verify-email-otp")({
           await consumeOtp(request, email, body.code);
           await connectMongo();
           await ensureAuthIndexes().catch(() => {});
-          let user = await User().findOne({ email });
+          let user = await User().findOne({ email }).select("+passwordHash +passwordSalt");
           let created = false;
           if (!user) {
             user = await User().create({

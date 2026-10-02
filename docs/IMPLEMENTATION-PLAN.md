@@ -57,11 +57,13 @@
   `returnTo` plumbed through OTP sign-in and OAuth alike.
 
 ### Phase 3 — navigation
-- `/app` becomes a layout route; sections become real child routes
-  (`/app/explore` … `/app/settings`). The shell (globe, search, status bar)
-  lives in the layout, so switching sections never remounts the canvas.
-- URL is the source of truth: routes mirror into `activeModule` for the
-  existing store readers. Sidebar/account menu become `<Link>`s.
+- `/app` keeps one shell and takes the section from the URL:
+  `/app?m=explore|travel|weather|maps|discover|ai|personal|tools|settings`.
+  The shell (globe canvas, search, status bar) lives above the section switch,
+  so changing section never remounts the canvas.
+- URL is the source of truth: the route mirrors into `activeModule` via
+  `syncActiveModule`, so deep links, refresh and back/forward all work while
+  globe, search and selection state survive. Sidebar and account menu navigate.
 - Deep links and back/forward work; unauthenticated deep links round-trip
   through `/auth?returnTo=…`.
 
@@ -73,3 +75,42 @@
 ### Phase 5 — verification
 - `npm run lint`, `npm run test`, `npm run build`, then browser smoke on the
   dev server and on the built output (desktop + mobile).
+
+## 3. Status after implementation
+
+| Area | Result |
+|---|---|
+| Lint | `npx eslint .` → **0 errors** (9 pre-existing warnings) |
+| Unit tests | `npm run test` → **55/55 pass** |
+| Production build | `npm run build` → exit 0 |
+| Dev render (desktop 1280×800 + mobile 390×844) | 200, real content, no console/JS errors, no horizontal overflow |
+| Built-output render | identical body-text hashes to dev, `divergesFromBaseline: false` |
+| Deep link + auth guard | `/app?m=weather` → `/auth?returnTo=%2Fapp%3Fm%3Dweather` on dev **and** the built output |
+| OAuth start (unconfigured) | 302 `/auth?error=OAUTH_PROVIDER_UNCONFIGURED`, destination preserved |
+| Open redirect | `?returnTo=https://evil.example/phish` is discarded, never reflected |
+| Forged callback state | 302 `/auth?error=OAUTH_STATE_INVALID` + `meridian_oauth` cookie cleared |
+| Globe persistence | same `<canvas>` DOM node across Explore → Travel → back (no remount) |
+| Globe liveness | frame captures differ between renders; GPU-backed WebGL2 context present |
+
+### Return destinations round-trip
+
+`state`, `nonce` and `returnTo` are sealed in the HttpOnly `meridian_oauth`
+cookie (HMAC'd with `SESSION_SECRET`), so a tampered `returnTo` fails the
+signature instead of redirecting off-site. `safeReturnTo()` accepts only
+same-origin paths and is applied on the way in (`?returnTo=`), on the way out
+(callback redirect) and on OAuth start failure. `oauthRedirectUri()` is used for
+both the authorize request and the code exchange, so a `*_CALLBACK_URL`
+override can never desync the two.
+
+### Known issue — pre-existing, unrelated to this pass
+
+The embedded **PGLite** fallback cannot run from the bundled server output: the
+Emscripten assets (`pglite.data`, `pglite.wasm`) are not copied into
+`.output/server/_libs/`, so the bundled module resolves `pglite.data` beside
+itself and throws `ENOENT` — every geo endpoint 500s when `DATABASE_URL` is
+unset. Dev is unaffected (assets resolve from `node_modules`), and a deployment
+that sets `DATABASE_URL` never loads PGLite, which is why production is not
+blocked by it. The fix is a Nitro build-config change (emit the PGLite assets,
+or externalise `@electric-sql/pglite`), so it was deliberately left out of this
+auth/UI/navigation pass. `src/lib/db.js` and the geo routes are untouched by
+this work.

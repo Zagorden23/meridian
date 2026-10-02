@@ -8,17 +8,17 @@
 //   signed state+nonce cookies and server-side token exchange + verification.
 //   Every provider returns HTTP 503 with a clear message until its credentials
 //   are configured — OAuth is never faked.
+import "./load-env.js";
 import {
   createHmac,
   createHash,
-  createPrivateKey,
   randomBytes,
   randomInt,
   scrypt,
-  sign,
   timingSafeEqual,
 } from "node:crypto";
 import mongoose from "mongoose";
+import { SignJWT, importPKCS8 } from "jose";
 import { connectMongo } from "./mongo.js";
 import { httpError } from "./api-envelope.js";
 import { verifyIdToken } from "./oidc.js";
@@ -55,6 +55,11 @@ export const User = () => model("MeridianUser", new mongoose.Schema({
     linkedAt: { type: Date, default: Date.now },
     _id: false,
   }],
+  // Email+password credential (commercial fallback that works without any
+  // external provider). scrypt hash + unique salt; never selected by default.
+  passwordHash: { type: String, select: false },
+  passwordSalt: { type: String, select: false },
+  passwordUpdatedAt: Date,
   role: { type: String, default: "user" },
   accountStatus: { type: String, default: "active" },
   preferences: { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -147,6 +152,37 @@ export async function verifyOtp(code, salt, codeHash) {
   }
 }
 
+// --- Password credential (scrypt hash, constant-time verify) -------------------
+// Commercial fallback: works offline with only MongoDB, no Resend/Twilio/OAuth.
+export function validatePassword(input) {
+  const pw = String(input ?? "");
+  if (pw.length < 8 || pw.length > 128) {
+    throw httpError(400, "WEAK_PASSWORD", "Use a password with at least 8 characters.");
+  }
+  return pw;
+}
+
+export async function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const derived = await scryptAsync(password, salt);
+  return { salt, passwordHash: derived.toString("hex") };
+}
+
+export async function verifyPassword(password, salt, passwordHash) {
+  try {
+    const derived = await scryptAsync(String(password ?? ""), salt);
+    const a = Buffer.from(derived.toString("hex"), "hex");
+    const b = Buffer.from(String(passwordHash), "hex");
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+export function passwordConfigured() {
+  return Boolean(process.env.MONGODB_URI && String(process.env.MONGODB_URI).trim());
+}
+
 // --- Delivery (Resend for email, Twilio for SMS; honest 503 otherwise) ---------
 export function emailConfigured() {
   return Boolean(process.env.EMAIL_PROVIDER_KEY && process.env.EMAIL_FROM);
@@ -225,8 +261,12 @@ export function clearSessionCookie(secure) {
   return `${SESSION_COOKIE}=; ${cookieAttrs(secure, 0)}`;
 }
 
-const isSecureRequest = (request) =>
-  new URL(request.url).protocol === "https:" || process.env.NODE_ENV === "production";
+const isSecureRequest = (request) => {
+  const forwarded = String(request.headers.get("x-forwarded-proto") ?? "").split(",")[0].trim().toLowerCase();
+  if (forwarded === "https") return true;
+  if (forwarded === "http") return false;
+  return new URL(request.url).protocol === "https:" || process.env.NODE_ENV === "production";
+};
 
 export function secureContext(request) {
   return isSecureRequest(request);
@@ -255,7 +295,7 @@ export async function getSessionUser(request) {
     if (sess) await AuthSession().deleteOne({ _id: sess._id }).catch(() => {});
     return null;
   }
-  const user = await User().findOne({ _id: sess.userId, accountStatus: "active" }).lean();
+  const user = await User().findOne({ _id: sess.userId, accountStatus: "active" }).select("+passwordHash").lean();
   if (!user) return null;
   return { user: publicUser(user), sessionId: sess._id };
 }
@@ -282,6 +322,7 @@ export function publicUser(user) {
     name: user.name ?? null,
     avatar: user.avatar ?? null,
     providers: (user.authProviders ?? []).map((p) => p.provider),
+    hasPassword: Boolean(user.passwordHash),
     role: user.role ?? "user",
     createdAt: user.createdAt ?? null,
     lastLoginAt: user.lastLoginAt ?? null,
@@ -447,15 +488,33 @@ async function exchangeCode(providerId, code, redirectUri) {
   } else {
     body.set("client_secret", process.env[cfg.secretEnv]);
   }
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-    signal: AbortSignal.timeout(15000),
-  });
+  let res;
+  try {
+    res = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body,
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    console.error(`[oauth] ${providerId} token exchange network failed:`, err?.message ?? err);
+    throw httpError(502, "OAUTH_EXCHANGE_FAILED", "The provider rejected the sign-in. Try again.");
+  }
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.access_token) {
-    throw httpError(502, "OAUTH_EXCHANGE_FAILED", "The provider rejected the sign-in. Try again.");
+    // Log status + provider error code only — never tokens or secrets.
+    console.error(`[oauth] ${providerId} token exchange rejected:`, {
+      status: res.status,
+      error: json?.error ?? null,
+      errorDescription: json?.error_description ?? null,
+    });
+    // Surface the provider's own error when it is safe to show (most common:
+    // redirect_uri mismatch because the callback URL was not registered).
+    const hint = String(json?.error_description ?? json?.error ?? "").slice(0, 200);
+    const message = hint && /redirect_uri|redirect|client|authorized/i.test(hint)
+      ? `The provider rejected the sign-in (${hint}). Check the callback URL registered in the provider console matches this app's origin.`
+      : "The provider rejected the sign-in. Try again.";
+    throw httpError(502, "OAUTH_EXCHANGE_FAILED", message);
   }
   return json;
 }
@@ -467,21 +526,37 @@ function applePrivateKey() {
 }
 
 async function appleClientSecret() {
+  // Apple requires the client_secret to be an ES256-signed JWT (JWS compact
+  // serialization with a RAW R||S signature). Node's crypto.sign() returns a
+  // DER-encoded EC signature, which Apple rejects with invalid_client — so
+  // this uses jose, which emits the correct JWS encoding.
+  const teamId = process.env.APPLE_TEAM_ID;
+  const keyId = process.env.APPLE_KEY_ID;
+  const clientId = process.env.APPLE_CLIENT_ID;
+  if (!teamId || !keyId || !clientId) {
+    throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", "Apple sign-in is not configured.");
+  }
+  let key;
+  try {
+    key = await importPKCS8(applePrivateKey(), "ES256");
+  } catch (err) {
+    console.error("[oauth] apple private key import failed:", err?.message ?? err);
+    throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", "Apple sign-in key is invalid. Check APPLE_PRIVATE_KEY.");
+  }
   const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: process.env.APPLE_KEY_ID })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({
-    iss: process.env.APPLE_TEAM_ID,
-    iat: now,
-    exp: now + 300,
-    aud: "https://appleid.apple.com",
-    sub: process.env.APPLE_CLIENT_ID,
-  })).toString("base64url");
-  const signer = sign(
-    "sha256",
-    Buffer.from(`${header}.${payload}`),
-    createPrivateKey({ key: applePrivateKey(), format: "pem" }),
-  );
-  return `${header}.${payload}.${signer.toString("base64url")}`;
+  try {
+    return await new SignJWT({})
+      .setProtectedHeader({ alg: "ES256", kid: keyId })
+      .setIssuer(teamId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 300)
+      .setAudience("https://appleid.apple.com")
+      .setSubject(clientId)
+      .sign(key);
+  } catch (err) {
+    console.error("[oauth] apple client_secret signing failed:", err?.message ?? err);
+    throw httpError(502, "OAUTH_EXCHANGE_FAILED", "Apple sign-in could not start. Try again.");
+  }
 }
 
 // Server-side identity resolution per provider (exchange already authenticated
@@ -518,10 +593,14 @@ export async function resolveOAuthIdentity(providerId, code, redirectUri, { nonc
     };
   }
   if (providerId === "amazon") {
-    const res = await fetch(`${OAUTH_PROVIDERS.amazon.profile}?access_token=${encodeURIComponent(tokens.access_token)}`, {
+    const res = await fetch(OAUTH_PROVIDERS.amazon.profile, {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
       signal: AbortSignal.timeout(12000),
     });
-    if (!res.ok) throw httpError(502, "OAUTH_VERIFY_FAILED", "Amazon verification failed.");
+    if (!res.ok) {
+      console.error("[oauth] amazon profile verification failed:", res.status);
+      throw httpError(502, "OAUTH_VERIFY_FAILED", "Amazon verification failed.");
+    }
     const p = await res.json();
     return {
       providerUserId: String(p.user_id),
@@ -573,6 +652,12 @@ export async function resolveOAuthAccount(identity, providerId, sessionUserId = 
   });
   if (byProvider) {
     if (byProvider.accountStatus !== "active") throw httpError(403, "ACCOUNT_DISABLED", "This account is disabled.");
+    // Link flow must never silently switch to a DIFFERENT account that already
+    // owns this provider — that would hand the session to someone else's user.
+    if (sessionUserId && String(byProvider._id) !== String(sessionUserId)) {
+      throw httpError(409, "ACCOUNT_LINK_CONFLICT",
+        "This provider is already linked to another account. Sign in with it directly instead.");
+    }
     return { user: byProvider, created: false };
   }
   if (sessionUserId && identity.email) {

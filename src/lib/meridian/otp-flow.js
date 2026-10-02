@@ -44,12 +44,19 @@ export async function requestOtp(request, identifier, channel, send) {
   }
   const code = generateOtpCode(); // never logged, never returned
   const { salt, codeHash } = await hashOtp(code);
-  await OtpCode().create({
+  const doc = await OtpCode().create({
     identifier, channel, codeHash, salt,
     expiresAt: new Date(Date.now() + OTP_TTL_MS),
     resendAvailableAt: new Date(Date.now() + 60 * 1000),
   });
-  await send(code); // throws honest 503 when the channel has no provider
+  try {
+    await send(code); // throws honest 503 when the channel has no provider
+  } catch (err) {
+    // Delivery failed — remove the triggers so the user is not stuck behind
+    // a 60s cooldown for a code that was never sent.
+    await OtpCode().deleteOne({ _id: doc._id }).catch(() => {});
+    throw err;
+  }
   return { channel, expiresInSeconds: Math.floor(OTP_TTL_MS / 1000) };
 }
 

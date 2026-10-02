@@ -1,3 +1,4 @@
+import "./meridian/load-env.js";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 // An empty/whitespace DATABASE_URL (an easy misconfig in deploy UIs) must mean
 // "unset" — otherwise production would silently run on the PGLite fallback.

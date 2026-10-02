@@ -1,14 +1,14 @@
-// MERIDIAN authentication — one identifier-first screen for sign in and
-// account creation. Provider buttons lead (Google / Microsoft / Apple with
-// real brand marks), then "or continue with email", phone as a secondary tab,
-// guest last. Unconfigured providers render disabled with their missing-variable
-// hint — OAuth is never faked.
+// MERIDIAN authentication — commercial sign in / sign up.
+// Provider buttons lead (Google / Microsoft / Apple / Amazon with real brand
+// marks), then email+password (works with only MongoDB — the always-available
+// credential), then email/phone codes, guest last. Unconfigured providers
+// render disabled with their missing-variable hint — OAuth is never faked.
 //
 // After sign-in the user returns to the pre-login destination (`?returnTo=`)
 // instead of always landing on /app.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Loader2, Lock, Mail, Phone, UserRound } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Loader2, Lock, Mail, Phone, KeyRound, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/meridian/api-client.js";
 import { useAuthStore } from "@/store/auth-store.js";
@@ -21,20 +21,71 @@ const ERROR_TEXT = {
   OTP_NOT_FOUND: "No active code. Request a new one first.",
   OTP_RESEND_COOLDOWN: "Please wait before requesting a new code.",
   RATE_LIMITED: "Too many attempts. Please wait and try again.",
-  EMAIL_PROVIDER_UNCONFIGURED: "Email delivery is not configured on this server yet.",
-  SMS_PROVIDER_UNCONFIGURED: "SMS delivery is not configured on this server yet.",
+  EMAIL_PROVIDER_UNCONFIGURED: "Email delivery is not configured on this server yet. Use a password instead.",
+  SMS_PROVIDER_UNCONFIGURED: "SMS delivery is not configured on this server yet. Use a password instead.",
   EMAIL_SEND_FAILED: "The email could not be sent. Try again shortly.",
   SMS_SEND_FAILED: "The SMS could not be sent. Try again shortly.",
   MONGO_UNCONFIGURED: "Accounts need MongoDB (MONGODB_URI) on the server.",
   ACCOUNT_LINK_REQUIRED: "An account already exists with this email. Sign in with the existing method, then link this provider from your profile.",
+  ACCOUNT_LINK_CONFLICT: "This provider is already linked to another account. Sign in with it directly instead.",
+  EMAIL_TAKEN: "An account with this email already exists. Sign in instead.",
+  INVALID_CREDENTIALS: "Incorrect email or password.",
+  WEAK_PASSWORD: "Use a password with at least 8 characters.",
+  PASSWORD_REQUIRED: "Enter your password.",
   OAUTH_CANCELLED: "The provider sign-in was cancelled.",
   OAUTH_STATE_INVALID: "Sign-in request expired. Please try again.",
-  OAUTH_PROVIDER_UNCONFIGURED: "This provider is not configured on the server.",
-  OAUTH_EXCHANGE_FAILED: "The provider rejected the sign-in. Please try again.",
+  OAUTH_PROVIDER_UNCONFIGURED: "This provider is not configured on the server yet. See setup steps below — or use password sign-in for now.",
+  OAUTH_EXCHANGE_FAILED: "The provider rejected the sign-in. Check that the callback URL is registered in the provider console, then try again.",
   OAUTH_VERIFY_FAILED: "The provider sign-in couldn't be completed. Please try again.",
   OAUTH_FAILED: "The provider sign-in couldn't be completed. Please try again.",
+  OAUTH_START_FAILED: "This provider couldn't start signing in. Check server setup, then try again.",
+  UNKNOWN_PROVIDER: "Unknown sign-in provider.",
+  SESSION_SECRET_MISSING: "Server session secret is missing. Set SESSION_SECRET (32+ chars) and restart.",
+  ACCOUNT_DISABLED: "This account is disabled.",
+  SESSION_REQUIRED: "Sign in first, then link this provider.",
   INVALID_EMAIL: "Enter a valid email address.",
   INVALID_PHONE: "Enter a valid phone number with country code.",
+};
+
+// Per-provider setup guidance shown when the server reports the provider as
+// unconfigured. Callback URLs are derived from the current origin at render
+// time — register exactly that URL in the provider console.
+const OAUTH_SETUP = {
+  google: {
+    console: "Google Cloud Console → APIs & Services → Credentials → OAuth client (Web)",
+    vars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+    steps: [
+      "Create an OAuth client ID (type: Web application).",
+      "Add the callback URL below under Authorized redirect URIs.",
+      "Set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET on the server and restart.",
+    ],
+  },
+  microsoft: {
+    console: "Microsoft Entra admin center → App registrations → New registration",
+    vars: ["MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET"],
+    steps: [
+      "Register an app (Web platform), add the callback URL below as a redirect URI.",
+      "Create a client secret under Certificates & secrets.",
+      "Set MICROSOFT_CLIENT_ID + MICROSOFT_CLIENT_SECRET (+ optional MICROSOFT_TENANT_ID, default common) and restart.",
+    ],
+  },
+  apple: {
+    console: "Apple Developer → Certificates, Identifiers & Profiles → Services ID + Key",
+    vars: ["APPLE_CLIENT_ID", "APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_PRIVATE_KEY"],
+    steps: [
+      "Create a Services ID (this is APPLE_CLIENT_ID) with Sign in with Apple enabled.",
+      "Create a Sign in with Apple key (note Key ID + Team ID), download the .p8 private key.",
+      "Set APPLE_CLIENT_ID + APPLE_TEAM_ID + APPLE_KEY_ID + APPLE_PRIVATE_KEY and restart.",
+    ],
+  },
+  amazon: {
+    console: "Amazon Developer Console → Login with Amazon → Create security profile",
+    vars: ["AMAZON_CLIENT_ID", "AMAZON_CLIENT_SECRET"],
+    steps: [
+      "Create a security profile, add the callback URL below under Allowed return URLs.",
+      "Set AMAZON_CLIENT_ID + AMAZON_CLIENT_SECRET on the server and restart.",
+    ],
+  },
 };
 
 const OAUTH_ORDER = ["google", "microsoft", "apple", "amazon"];
@@ -90,7 +141,8 @@ function AmazonMark({ className }) {
 
 const OAUTH_MARKS = { google: GoogleMark, microsoft: MicrosoftMark, apple: AppleMark, amazon: AmazonMark };
 const SIGNIN_TABS = [
-  { id: "email", label: "Email", Icon: Mail },
+  { id: "password", label: "Password", Icon: KeyRound },
+  { id: "email", label: "Email code", Icon: Mail },
   { id: "phone", label: "Phone", Icon: Phone },
 ];
 
@@ -143,7 +195,7 @@ export function AuthPage() {
   const continueAsGuest = useAuthStore((s) => s.continueAsGuest);
   const status = useAuthStore((s) => s.status);
 
-  const [tab, setTab] = useState("email"); // email|phone
+  const [tab, setTab] = useState("email"); // password|email|phone — reference shows Email code active
   // Derived from route search (not useState) so the sign-in/create toggle
   // updates without a remount or reload.
   const mode = modeParam === "signup" ? "signup" : "signin";
@@ -152,6 +204,8 @@ export function AuthPage() {
   const returnTo = useMemo(() => sanitizeReturnTo(returnToParam), [returnToParam]);
 
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [phone, setPhone] = useState("");
   const [cc, setCc] = useState("+91");
   const [name, setName] = useState("");
@@ -161,15 +215,28 @@ export function AuthPage() {
   const [oauthPending, setOauthPending] = useState(null); // provider id
   const [error, setError] = useState("");
   const [cooldown, setCooldown] = useState(0);
+  const [setupOpen, setSetupOpen] = useState(null); // provider id with setup help expanded
+  const [capsLoading, setCapsLoading] = useState(true);
   const busy = pending || oauthPending !== null;
 
+  const refreshCaps = () => {
+    setCapsLoading(true);
+    api.authProviders()
+      .then((res) => setCaps(res.data))
+      .catch(() => setCaps({ oauth: [] }))
+      .finally(() => setCapsLoading(false));
+  };
+
   useEffect(() => {
-    api.authProviders().then((res) => setCaps(res.data)).catch(() => setCaps({ oauth: [] }));
+    refreshCaps();
   }, []);
 
   useEffect(() => {
     if (status === "AUTHENTICATED" || status === "GUEST") navigate({ to: returnTo });
   }, [status, navigate, returnTo]);
+
+  // Keep the displayed error in sync when arriving from an OAuth redirect.
+  useEffect(() => { setUrlError(errorParam ?? null); }, [errorParam]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -178,14 +245,47 @@ export function AuthPage() {
   }, [cooldown]);
 
   const fail = (err) => {
-    const msg = ERROR_TEXT[err?.code] ?? err?.message ?? "Something went wrong. Please try again.";
-    setError(err?.code && ERROR_TEXT[err.code] && err.code === "OTP_INVALID" ? `${msg} ${err.message}` : msg);
+    const base = ERROR_TEXT[err?.code] ?? err?.message ?? "Something went wrong. Please try again.";
+    // OTP_INVALID carries remaining-attempt detail in err.message — keep it.
+    setError(err?.code === "OTP_INVALID" && err?.message !== base ? `${base} ${err.message}` : base);
+  };
+
+  const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v ?? "").trim());
+
+  const submitPassword = async () => {
+    setError("");
+    if (!validEmail(email)) {
+      setError(ERROR_TEXT.INVALID_EMAIL);
+      return;
+    }
+    if (mode === "signup" && String(password ?? "").length < 8) {
+      setError(ERROR_TEXT.WEAK_PASSWORD);
+      return;
+    }
+    if (mode === "signin" && !password) {
+      setError(ERROR_TEXT.PASSWORD_REQUIRED);
+      return;
+    }
+    setPending(true);
+    try {
+      const res = mode === "signup"
+        ? await api.signupPassword(email.trim(), password, name.trim() || undefined)
+        : await api.signinPassword(email.trim(), password);
+      setAuthenticated(res.data.user);
+      toast.success(mode === "signup" ? "Account created — welcome to Meridian." : "Welcome back.");
+      navigate({ to: returnTo });
+    } catch (err) { fail(err); } finally { setPending(false); }
   };
 
   const sendEmail = async () => {
-    setPending(true); setError("");
+    setError("");
+    if (!validEmail(email)) {
+      setError(ERROR_TEXT.INVALID_EMAIL);
+      return;
+    }
+    setPending(true);
     try {
-      await api.requestEmailOtp(email);
+      await api.requestEmailOtp(email.trim());
       setSent(true); setCode(""); setCooldown(60);
       toast.success("Code sent — check your inbox.");
     } catch (err) { fail(err); } finally { setPending(false); }
@@ -210,11 +310,10 @@ export function AuthPage() {
       toast.success(mode === "signup" ? "Account created — welcome to Meridian." : "Welcome back.");
       navigate({ to: returnTo });
     } catch (err) {
+      // Show the failure inline; keep the session state untouched so the
+      // user can retry the code without being bounced.
       fail(err);
-      if (["OTP_INVALID", "OTP_EXPIRED", "OTP_LOCKED", "OTP_NOT_FOUND"].includes(err?.code)) {
-        authError(err.message);
-        useAuthStore.setState({ status: useAuthStore.getState().user ? "AUTHENTICATED" : "UNAUTHENTICATED" });
-      }
+      void authError;
     } finally { setPending(false); }
   };
 
@@ -225,58 +324,75 @@ export function AuthPage() {
 
   const startOAuth = (id) => {
     // Full-page redirect to the provider; the server seals state+nonce+returnTo
-    // in an HttpOnly cookie and the callback returns here afterwards.
+    // in an HttpOnly cookie and the callback returns here afterwards. The
+    // signup/signin tab (mode) travels as a query param so a start failure
+    // can land back on the same tab instead of flipping to sign-in.
     setOauthPending(id);
-    const dest = returnTo && returnTo !== "/app"
-      ? `/api/auth/${id}?returnTo=${encodeURIComponent(returnTo)}`
-      : `/api/auth/${id}`;
-    window.location.assign(dest);
+    const qs = new URLSearchParams();
+    if (returnTo && returnTo !== "/app") qs.set("returnTo", returnTo);
+    if (mode === "signup") qs.set("mode", "signup");
+    const suffix = qs.toString() ? `?${qs}` : "";
+    window.location.assign(`/api/auth/${id}${suffix}`);
+  };
+
+  const callbackUrlFor = (id) => {
+    try {
+      return `${window.location.origin}/api/auth/${id}/callback`;
+    } catch {
+      return `/api/auth/${id}/callback`;
+    }
   };
 
   const configured = useMemo(() => {
     const list = caps?.oauth ?? [];
     return [...list].sort((a, b) => OAUTH_ORDER.indexOf(a.id) - OAUTH_ORDER.indexOf(b.id));
   }, [caps]);
+  const passwordOk = caps?.password?.configured ?? caps?.mongo?.configured ?? true;
   const emailOk = caps?.emailOtp?.configured ?? true;
   const phoneOk = caps?.phoneOtp?.configured ?? true;
 
   return (
-    <div className="flex min-h-dvh flex-col bg-bg text-fg md:flex-row">
-      {/* Left observatory visual */}
-      <div className="relative hidden flex-1 items-center justify-center overflow-hidden md:flex" aria-hidden>
-        <div className="absolute inset-0" style={{ background: "radial-gradient(circle at 50% 42%, rgba(158,201,214,.12) 0%, transparent 60%)" }} />
-        <div className="relative text-center">
+    // Reference layout: dark stage, left observatory visual + right inset card.
+    // Below lg the visual hides and the card takes the full width.
+    <div className="flex min-h-dvh flex-col bg-bg text-fg lg:flex-row">
+      {/* Left observatory visual — matches reference orbit illustration */}
+      <div className="relative hidden flex-1 items-center justify-center overflow-hidden lg:flex" aria-hidden>
+        <div className="absolute inset-0" style={{ background: "radial-gradient(circle at 50% 40%, rgba(158,201,214,.10) 0%, transparent 62%)" }} />
+        <div className="relative px-12 text-center">
           <p className="text-xs font-medium uppercase tracking-label text-muted">Observatory</p>
-          <p className="font-display mt-2 text-6xl italic">Meridian</p>
-          <p className="mx-auto mt-4 max-w-xs text-sm leading-relaxed text-muted">
-            A quiet globe of places that hold the light — now with a place for you.
+          <p className="font-display mt-3 text-7xl italic leading-none">Meridian</p>
+          <p className="mx-auto mt-5 max-w-sm text-[15px] leading-relaxed text-muted">
+            A quiet globe of places that hold the light — now
+            <br />
+            with a place for you.
           </p>
-          <svg viewBox="0 0 300 300" className="mx-auto mt-8 w-56 opacity-80">
-            <circle cx="150" cy="150" r="86" fill="none" stroke="rgba(158,201,214,.4)" strokeWidth="1" />
-            <ellipse cx="150" cy="150" rx="118" ry="44" fill="none" stroke="rgba(158,201,214,.3)" strokeWidth="1" transform="rotate(-18 150 150)" />
-            <circle cx="104" cy="104" r="3" fill="#e9edf4" />
-            <circle cx="212" cy="182" r="4" fill="#9ec9d6" />
+          <svg viewBox="0 0 320 320" className="mx-auto mt-10 block w-64 opacity-70" aria-hidden focusable="false">
+            <circle cx="160" cy="170" r="88" fill="none" stroke="rgba(158,201,214,.45)" strokeWidth="1" />
+            <ellipse cx="160" cy="170" rx="128" ry="52" fill="none" stroke="rgba(158,201,214,.32)" strokeWidth="1" transform="rotate(-16 160 170)" />
+            <ellipse cx="160" cy="170" rx="128" ry="52" fill="none" stroke="rgba(158,201,214,.18)" strokeWidth="1" transform="rotate(24 160 170)" />
+            <circle cx="112" cy="118" r="3.5" fill="#e9edf4" />
+            <circle cx="222" cy="216" r="4.5" fill="#9ec9d6" opacity="0.9" />
           </svg>
         </div>
       </div>
 
-      {/* Right card */}
-      <div className="flex flex-1 items-center justify-center px-5 py-10">
-        <div className="w-full max-w-md rounded-3xl bg-surface/85 p-6 shadow-border backdrop-blur-md md:p-8">
+      {/* Right inset card — rounded panel with breathing room, scrolls safely on short screens */}
+      <div className="flex flex-1 items-stretch justify-center p-3 sm:p-5 lg:max-w-[720px] lg:p-6">
+        <div className="m-auto max-h-none w-full max-w-xl overflow-y-auto rounded-[28px] border border-white/[0.06] bg-surface p-6 shadow-border backdrop-blur-md sm:p-8 lg:max-h-[calc(100dvh-3rem)] lg:p-10">
           <button type="button" onClick={() => navigate({ to: "/" })}
-            className="flex items-center gap-1.5 rounded-lg text-xs text-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-            <ArrowLeft className="size-3.5" aria-hidden /> Back to Meridian
+            className="flex items-center gap-2 rounded-lg text-sm text-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+            <ArrowLeft className="size-4" aria-hidden /> Back to Meridian
           </button>
-          <p className="mt-4 text-xs font-medium uppercase tracking-label text-muted">
+          <p className="mt-6 text-xs font-medium uppercase tracking-label text-muted">
             {mode === "signup" ? "Create account" : "Enter Meridian"}
           </p>
-          <h1 className="font-display mt-1 text-3xl italic">
+          <h1 className="font-display mt-2 text-4xl italic leading-tight">
             {mode === "signup" ? "Join the observatory" : "Welcome back"}
           </h1>
 
           {(urlError || error) && (
             <p role="alert" className="mt-3 rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-muted">
-              {ERROR_TEXT[urlError] ?? error}
+              {urlError ? (ERROR_TEXT[urlError] ?? `Sign-in failed (${urlError}). Please try again.`) : error}
             </p>
           )}
           {urlError && (
@@ -286,69 +402,165 @@ export function AuthPage() {
           )}
 
           {/* Primary: provider sign-in comes first, one calm row each. */}
-          <div className="mt-5" role="group" aria-label="Continue with a provider">
-            <ul className="space-y-2">
-              {configured.map((p) => {
-                const Mark = OAUTH_MARKS[p.id];
-                const waiting = oauthPending === p.id;
-                if (!p.configured) {
+          <div className="mt-7" role="group" aria-label="Continue with a provider">
+            {capsLoading ? (
+              <ul className="space-y-2.5" aria-label="Loading sign-in providers">
+                {OAUTH_ORDER.map((id) => (
+                  <li key={id} className="flex items-center gap-3 rounded-2xl bg-white/[0.03] px-5 py-3.5">
+                    <span className="size-5 shrink-0 animate-pulse rounded-full bg-border" aria-hidden />
+                    <span className="h-4 flex-1 animate-pulse rounded bg-border/70" aria-hidden />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <ul className="space-y-2.5">
+                {configured.map((p) => {
+                  const Mark = OAUTH_MARKS[p.id];
+                  const waiting = oauthPending === p.id;
+                  if (!p.configured) {
+                    const open = setupOpen === p.id;
+                    const setup = OAUTH_SETUP[p.id];
+                    const callbackUrl = callbackUrlFor(p.id);
+                    return (
+                      <li key={p.id} className="rounded-2xl bg-white/[0.03]">
+                        <button
+                          type="button"
+                          onClick={() => setSetupOpen(open ? null : p.id)}
+                          aria-expanded={open}
+                          aria-label={`Continue with ${OAUTH_LABEL[p.id] ?? p.id} — setup needed. Show setup steps.`}
+                          className="flex w-full items-center gap-3 rounded-2xl px-5 py-3.5 text-[15px] text-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                        >
+                          {Mark && <Mark className="size-5 shrink-0 opacity-60" />}
+                          <span className="flex-1 text-left">Continue with {OAUTH_LABEL[p.id] ?? p.id}</span>
+                          <span className="text-[11px] uppercase tracking-label text-subtle">{open ? "hide setup" : "setup needed"}</span>
+                        </button>
+                        {open && (
+                          <div className="border-t border-border/60 px-4 py-3 text-left">
+                            <p className="text-xs font-medium">To enable {OAUTH_LABEL[p.id] ?? p.id} sign-in:</p>
+                            {setup && (
+                              <>
+                                <p className="mt-1.5 text-[11px] text-muted">{setup.console}</p>
+                                <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-muted">
+                                  {setup.steps.map((s, i) => <li key={i}>{s}</li>)}
+                                </ol>
+                              </>
+                            )}
+                            <p className="mt-2 text-[11px] text-muted">Missing on server:</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-fg">{(p.missing ?? []).join(", ") || "unknown"}</p>
+                            <p className="mt-2 text-[11px] text-muted">Register this callback URL:</p>
+                            <p className="mt-0.5 break-all rounded-lg bg-bg/60 px-2 py-1.5 font-mono text-[11px] text-fg">{callbackUrl}</p>
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => { try { navigator.clipboard?.writeText(callbackUrl); toast.success("Callback URL copied."); } catch { /* clipboard unavailable */ } }}
+                                className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                              >
+                                Copy URL
+                              </button>
+                              <button
+                                type="button"
+                                onClick={refreshCaps}
+                                className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                              >
+                                I've configured it — retry
+                              </button>
+                            </div>
+                            <p className="mt-2 text-[11px] text-subtle">
+                              Password sign-in below works right now (no provider setup needed).
+                            </p>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  }
                   return (
                     <li key={p.id}>
-                      <span
-                        title={`Not configured on this server: ${(p.missing ?? []).join(", ")}`}
-                        aria-disabled="true"
-                        className="flex cursor-not-allowed items-center gap-3 rounded-xl bg-surface-raised/40 px-4 py-2.5 text-sm text-subtle"
+                      <button
+                        type="button"
+                        onClick={() => startOAuth(p.id)}
+                        disabled={busy}
+                        aria-label={`Continue with ${OAUTH_LABEL[p.id] ?? p.id}`}
+                        className="flex w-full items-center gap-3 rounded-xl bg-surface-raised/70 px-4 py-2.5 text-sm font-medium transition-colors hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
                       >
-                        {Mark && <Mark className="size-[18px] shrink-0 opacity-50" />}
-                        <span className="flex-1">Continue with {OAUTH_LABEL[p.id] ?? p.id}</span>
-                        <span className="text-[11px] uppercase tracking-label">setup needed</span>
-                      </span>
+                        {waiting
+                          ? <Loader2 className="size-[18px] shrink-0 animate-spin" aria-hidden />
+                          : Mark && <Mark className="size-[18px] shrink-0" />}
+                        <span className="flex-1 text-left">
+                          {waiting ? `Connecting to ${OAUTH_LABEL[p.id] ?? p.id}…` : `Continue with ${OAUTH_LABEL[p.id] ?? p.id}`}
+                        </span>
+                      </button>
                     </li>
                   );
-                }
-                return (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      onClick={() => startOAuth(p.id)}
-                      disabled={busy}
-                      aria-label={`Continue with ${OAUTH_LABEL[p.id] ?? p.id}`}
-                      className="flex w-full items-center gap-3 rounded-xl bg-surface-raised/70 px-4 py-2.5 text-sm font-medium transition-colors hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
-                    >
-                      {waiting
-                        ? <Loader2 className="size-[18px] shrink-0 animate-spin" aria-hidden />
-                        : Mark && <Mark className="size-[18px] shrink-0" />}
-                      <span className="flex-1 text-left">
-                        {waiting ? `Connecting to ${OAUTH_LABEL[p.id] ?? p.id}…` : `Continue with ${OAUTH_LABEL[p.id] ?? p.id}`}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+                })}
+              </ul>
+            )}
+            {!capsLoading && configured.length > 0 && configured.every((p) => !p.configured) && (
+              <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+                Social sign-in needs server setup (expand a provider above). Password sign-in below works now.
+              </p>
+            )}
             <p className="mt-2 flex items-center gap-1.5 text-[11px] text-subtle">
               <Lock className="size-3" aria-hidden /> Secure sign-in — credentials stay with the provider.
             </p>
           </div>
 
-          <div className="my-4 flex items-center gap-3" aria-hidden>
-            <span className="h-px flex-1 bg-border" />
+          <div className="my-6 flex items-center gap-4" aria-hidden>
+            <span className="h-px flex-1 bg-white/10" />
             <span className="text-[11px] uppercase tracking-label text-subtle">or</span>
-            <span className="h-px flex-1 bg-border" />
+            <span className="h-px flex-1 bg-white/10" />
           </div>
 
-          <div className="flex gap-1.5" role="tablist" aria-label="Sign-in methods">
+          <div className="flex flex-wrap items-center justify-center gap-1 sm:gap-2" role="tablist" aria-label="Sign-in methods">
             {SIGNIN_TABS.map((t) => {
               const TabIcon = t.Icon;
+              const active = tab === t.id;
               return (
                 <button
-                  key={t.id} role="tab" aria-selected={tab === t.id} type="button" onClick={() => { setTab(t.id); setSent(false); setCode(""); setError(""); }}
-                  className={cn("flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent", tab === t.id ? "bg-surface-raised text-fg" : "text-subtle hover:text-fg")}>
-                  <TabIcon className="size-4" aria-hidden /> {t.label}
+                  key={t.id} role="tab" aria-selected={active} type="button" onClick={() => { setTab(t.id); setSent(false); setCode(""); setError(""); }}
+                  className={cn("flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:px-5 sm:text-[15px]", active ? "bg-white/[0.07] font-medium text-fg" : "text-subtle hover:text-fg")}>
+                  <TabIcon className="size-4 shrink-0 sm:size-[18px]" aria-hidden /> {t.label}
                 </button>
               );
             })}
           </div>
+
+          {tab === "password" && (
+            <div className="mt-4 space-y-3">
+              {!passwordOk && <p className="text-xs text-subtle">Password sign-in needs MONGODB_URI on the server.</p>}
+              <label className="block text-xs text-muted">Email address
+                <input type="email" autoComplete="email" value={email} disabled={busy} onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com" onKeyDown={(e) => e.key === "Enter" && submitPassword()}
+                  className="mt-1 w-full rounded-xl bg-surface-raised/70 px-3 py-2.5 text-sm outline-none placeholder:text-subtle focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50" />
+              </label>
+              <label className="block text-xs text-muted">Password {mode === "signup" && <span className="text-subtle">(min 8 characters)</span>}
+                <span className="relative mt-1 block">
+                  <input type={showPassword ? "text" : "password"} autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                    value={password} disabled={busy} onChange={(e) => setPassword(e.target.value)}
+                    placeholder={mode === "signup" ? "Choose a password" : "Your password"}
+                    onKeyDown={(e) => e.key === "Enter" && submitPassword()}
+                    className="w-full rounded-xl bg-surface-raised/70 px-3 py-2.5 pr-10 text-sm outline-none placeholder:text-subtle focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50" />
+                  <button type="button" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-subtle hover:text-fg">
+                    {showPassword ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
+                  </button>
+                </span>
+              </label>
+              {mode === "signup" && (
+                <label className="block text-xs text-muted">Display name <span className="text-subtle">(optional)</span>
+                  <input value={name} disabled={busy} onChange={(e) => setName(e.target.value)} placeholder="Ada"
+                    onKeyDown={(e) => e.key === "Enter" && submitPassword()}
+                    className="mt-1 w-full rounded-xl bg-surface-raised/70 px-3 py-2.5 text-sm outline-none placeholder:text-subtle focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50" />
+                </label>
+              )}
+              <button type="button" onClick={submitPassword} disabled={pending || !passwordOk}
+                className="w-full rounded-xl bg-accent px-3 py-2.5 text-sm font-semibold uppercase tracking-label text-accent-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:opacity-40">
+                {pending ? (mode === "signup" ? "Creating…" : "Signing in…") : mode === "signup" ? "Create account" : "Sign in"}
+              </button>
+              <p className="text-[11px] text-subtle">
+                {mode === "signup" ? "Passwords are hashed with scrypt and never stored in plain text." : "Forgot your password? Create a new account with email codes if enabled, or continue as guest."}
+              </p>
+            </div>
+          )}
 
           {tab === "email" && (
             <div className="mt-4 space-y-3">

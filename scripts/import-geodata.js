@@ -11,9 +11,7 @@
 // Without DATABASE_URL the script cannot reach the dev server's in-memory
 // PGLite — use POST /api/admin/seed while the dev server runs instead.
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
 const { seedCurated, logIngestion } = await import("../src/lib/meridian/seed.js");
 const { normalizeName } = await import("../src/lib/meridian/geo-math.js");
 

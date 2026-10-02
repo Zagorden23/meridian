@@ -50,7 +50,7 @@ export function LocationPanel() {
         })
         .catch(() => setFav(null));
     }
-  }, [location, authed]); // eslint-disable-line
+  }, [location, authed]);
 
   const toggleSave = async () => {
     if (!location) return;

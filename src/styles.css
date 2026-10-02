@@ -6,7 +6,11 @@
   --color-surface-raised: #191c27;
   --color-fg: #e9edf4;
   --color-muted: #8b93a7;
-  --color-subtle: #6b7386;
+  /* Secondary/metadata text. Kept at the lightest value that still clears WCAG
+     AA (4.5:1) for small text on every surface it is painted on — #6b7386 was
+     4.21:1 on bg and only 3.58:1 on --color-surface-raised. Do not darken it
+     back without re-running `node scripts/contrast-audit.mjs`. */
+  --color-subtle: #7d879b;
   --color-accent: #9ec9d6;
   --color-accent-fg: #07080c;
   --color-border: rgb(233 237 244 / 0.12);

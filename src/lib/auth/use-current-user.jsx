@@ -35,10 +35,10 @@ export const DEV_USER = {
  * call keeps a stable hook order across every render of a given component.
  */
 export function useCurrentUserState() {
+    // Unconditional hook call keeps hook order stable — result ignored when auth is disabled.
+    const { data, isPending } = authClient.useSession();
     if (!authEnabled)
         return { user: DEV_USER, isPending: false };
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
-    const { data, isPending } = authClient.useSession();
     const user = data?.user;
     return {
         user: user

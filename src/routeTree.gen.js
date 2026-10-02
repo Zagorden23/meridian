@@ -29,6 +29,8 @@ import { Route as ApiAuthProvidersRouteImport } from './routes/api/auth/provider
 import { Route as ApiAuthRequestEmailOtpRouteImport } from './routes/api/auth/request-email-otp'
 import { Route as ApiAuthRequestPhoneOtpRouteImport } from './routes/api/auth/request-phone-otp'
 import { Route as ApiAuthSessionRouteImport } from './routes/api/auth/session'
+import { Route as ApiAuthSigninPasswordRouteImport } from './routes/api/auth/signin-password'
+import { Route as ApiAuthSignupPasswordRouteImport } from './routes/api/auth/signup-password'
 import { Route as ApiAuthUnlinkProviderRouteImport } from './routes/api/auth/unlink-provider'
 import { Route as ApiAuthVerifyEmailOtpRouteImport } from './routes/api/auth/verify-email-otp'
 import { Route as ApiAuthVerifyPhoneOtpRouteImport } from './routes/api/auth/verify-phone-otp'
@@ -145,6 +147,16 @@ const ApiAuthRequestPhoneOtpRoute = ApiAuthRequestPhoneOtpRouteImport.update({
 const ApiAuthSessionRoute = ApiAuthSessionRouteImport.update({
   id: '/api/auth/session',
   path: '/api/auth/session',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthSigninPasswordRoute = ApiAuthSigninPasswordRouteImport.update({
+  id: '/api/auth/signin-password',
+  path: '/api/auth/signin-password',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthSignupPasswordRoute = ApiAuthSignupPasswordRouteImport.update({
+  id: '/api/auth/signup-password',
+  path: '/api/auth/signup-password',
   getParentRoute: () => rootRouteImport,
 })
 const ApiAuthUnlinkProviderRoute = ApiAuthUnlinkProviderRouteImport.update({
@@ -300,6 +312,8 @@ const rootRouteChildren = {
   ApiAuthRequestEmailOtpRoute: ApiAuthRequestEmailOtpRoute,
   ApiAuthRequestPhoneOtpRoute: ApiAuthRequestPhoneOtpRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiAuthSigninPasswordRoute: ApiAuthSigninPasswordRoute,
+  ApiAuthSignupPasswordRoute: ApiAuthSignupPasswordRoute,
   ApiAuthUnlinkProviderRoute: ApiAuthUnlinkProviderRoute,
   ApiAuthVerifyEmailOtpRoute: ApiAuthVerifyEmailOtpRoute,
   ApiAuthVerifyPhoneOtpRoute: ApiAuthVerifyPhoneOtpRoute,

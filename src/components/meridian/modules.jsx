@@ -7,6 +7,7 @@ import { useMeridianStore } from "@/store/meridian-store.js";
 import { useGlobeStore } from "@/store/globe-store.js";
 import { useAuthStore } from "@/store/auth-store.js";
 import { listHistory, listSaved, removeSaved } from "@/lib/meridian/favorites.js";
+import { toast } from "sonner";
 import { Panel, EmptyState, SourceLine } from "./ui.jsx";
 import { WeatherPanel } from "./weather-card.jsx";
 import { cn } from "@/lib/utils";
@@ -258,6 +259,114 @@ export function PersonalPanel() {
   );
 }
 
+const PROVIDER_LABEL = { google: "Google", microsoft: "Microsoft", apple: "Apple", amazon: "Amazon", password: "Password", email: "Email code", phone: "Phone code" };
+
+/**
+ * Sign-in methods for the signed-in account: every provider already linked can
+ * be detached (as long as another method remains — the server enforces that),
+ * and any provider configured on this deployment can be attached. Linking
+ * reuses the same verified OAuth flow, so a provider is never attached twice and
+ * a verified email can never silently merge two accounts.
+ */
+function ConnectedAccounts() {
+  const navigate = useNavigate();
+  const status = useAuthStore((s) => s.status);
+  const user = useAuthStore((s) => s.user);
+  const [caps, setCaps] = useState(null);
+  const [busy, setBusy] = useState(null);
+
+  useEffect(() => {
+    if (status !== "AUTHENTICATED") return;
+    api.authProviders().then((res) => setCaps(res.data)).catch(() => setCaps({ oauth: [] }));
+  }, [status]);
+
+  if (status !== "AUTHENTICATED" || !user) {
+    return (
+      <Panel kicker="Account" title="Sign-in methods">
+        <EmptyState message="Sign in to manage the providers linked to your account." />
+        <button
+          type="button"
+          onClick={() => navigate({ to: "/auth", search: { returnTo: "/app?m=settings" } })}
+          className="mt-2 w-full rounded-xl bg-accent px-3 py-2 text-sm font-medium text-accent-fg"
+        >
+          Sign in
+        </button>
+      </Panel>
+    );
+  }
+
+  const linked = user.providers ?? [];
+  const allProviders = caps?.oauth ?? [];
+  const available = allProviders.filter((p) => p.configured);
+  const unconfigured = allProviders.filter((p) => !p.configured);
+
+  const unlink = async (id) => {
+    setBusy(id);
+    try {
+      const res = await api.unlinkProvider(id);
+      useAuthStore.getState().setAuthenticated(res.data.user);
+      toast.success(`${PROVIDER_LABEL[id] ?? id} disconnected.`);
+    } catch (err) {
+      toast.error(err?.message ?? "Could not disconnect that provider.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Panel kicker="Account" title="Sign-in methods">
+      <ul className="space-y-1.5">
+        {linked.map((id) => (
+          <li key={id} className="flex items-center gap-2 rounded-xl bg-surface-raised/50 px-3 py-2">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{PROVIDER_LABEL[id] ?? id}</span>
+            <button
+              type="button"
+              onClick={() => unlink(id)}
+              disabled={busy === id}
+              aria-label={`Disconnect ${PROVIDER_LABEL[id] ?? id}`}
+              className="shrink-0 rounded-full px-2 py-1 text-xs text-subtle hover:text-fg disabled:opacity-40"
+            >
+              {busy === id ? "Removing…" : "Disconnect"}
+            </button>
+          </li>
+        ))}
+        {!linked.length && <EmptyState message="Signed in with email or phone." />}
+      </ul>
+      {available.some((p) => !linked.includes(p.id)) && (
+        <>
+          <p className="mt-3 text-[11px] uppercase tracking-label text-subtle">Connect another</p>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {available.filter((p) => !linked.includes(p.id)).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => window.location.assign(
+                  `/api/auth/${p.id}?intent=link&returnTo=${encodeURIComponent("/app?m=settings")}`,
+                )}
+                className="rounded-xl bg-surface-raised/70 px-3 py-2 text-sm hover:bg-surface-raised"
+              >
+                Connect {PROVIDER_LABEL[p.id] ?? p.id}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {!available.length && !linked.length && (
+        <p className="mt-2 text-xs text-subtle">
+          No social providers are configured on this server yet
+          {unconfigured.length > 0 && ` (${unconfigured.map((p) => p.label).join(", ")} need ${unconfigured[0]?.missing?.join(", ") ?? "setup"})`}.
+          {" "}See the sign-in screen for per-provider setup steps, or continue with password sign-in.
+        </p>
+      )}
+      {unconfigured.length > 0 && linked.length > 0 && (
+        <p className="mt-2 text-xs text-subtle" title={unconfigured.map((p) => `${p.label}: ${(p.missing ?? []).join(", ")}`).join(" · ")}>
+          {unconfigured.map((p) => p.label).join(", ")} {unconfigured.length === 1 ? "needs" : "need"} server setup before {unconfigured.length === 1 ? "it" : "they"} can be connected.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
 export function SettingsPanel() {
   const units = useMeridianStore((s) => s.units);
   const setUnits = useMeridianStore((s) => s.setUnits);
@@ -276,6 +385,7 @@ export function SettingsPanel() {
           ))}
         </div>
       </Panel>
+      <ConnectedAccounts />
       <Panel kicker="Settings" title="Data sources" action={
         <button type="button" onClick={load} className="text-xs text-subtle hover:text-fg">Check health</button>
       }>
