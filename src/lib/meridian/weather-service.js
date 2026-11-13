@@ -1,241 +1,288 @@
-// WeatherService — frontend NEVER calls providers directly.
-// Flow: API route → getWeather() → cache (weather_cache) → Open-Meteo
-// (keyless, coordinate-based) → normalize → cache → response.
-// Failures: recent cache with `cached:true` + timestamp, else 503-style error.
-// Never fabricate values; missing fields are null.
-import { getSql } from "@/lib/db.js";
-import { TTL, withFreshness } from "./data-freshness.js";
+// Weather service: Open-Meteo (default, keyless) or MET Norway,
+// cached in-memory and in MongoDB (`WeatherSnapshot` collection with TTL).
+
 import { validateLatLon } from "./geo-math.js";
+import { cacheWeatherMongo, connectMongo, WeatherSnapshot } from "./mongo.js";
 
-const CURRENT_URL = "https://api.open-meteo.com/v1/forecast";
-const MET_NO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
-const USER_AGENT = "MeridianGlobeApp/1.0 (https://github.com/Zagorden23/meridian)";
-
-const CURRENT_FIELDS =
-  "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility";
-
-const CODE_MAP = {
-  0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-  45: "Fog", 48: "Depositing rime fog", 51: "Light drizzle", 53: "Moderate drizzle",
-  55: "Dense drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle", 61: "Slight rain",
-  63: "Moderate rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
-  71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 77: "Snow grains",
-  80: "Slight showers", 81: "Moderate showers", 82: "Violent showers",
-  85: "Slight snow showers", 86: "Heavy snow showers", 95: "Thunderstorm",
-  96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
-};
-
-const memCache = new Map(); // key → { payload, expiresAt }
+const TTL_MS = 15 * 60 * 1000; // 15 minutes
+const memCache = new Map();
 
 function cacheKey(lat, lon) {
-  return `wx:${Number(lat).toFixed(3)},${Number(lon).toFixed(3)}`;
+  return `wx:${lat.toFixed(2)},${lon.toFixed(2)}`;
 }
 
 async function readCache(key) {
   const mem = memCache.get(key);
-  if (mem && Date.parse(mem.expiresAt) > Date.now()) return { ...mem.payload, cached: true };
+  if (mem && Date.now() < mem.exp) return mem.data;
+
   try {
-    const db = await getSql();
-    const rows = await db.query("SELECT payload, expires_at FROM weather_cache WHERE key = $1", [key]);
-    if (!rows.length) return null;
-    const row = rows[0];
-    if (Date.parse(row.expires_at) <= Date.now()) return null;
-    const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
-    memCache.set(key, { payload, expiresAt: row.expires_at });
-    return { ...payload, cached: true };
+    const conn = await connectMongo();
+    if (!conn) return null;
+    const now = new Date();
+    const doc = await WeatherSnapshot()
+      .findOne({ key, expiresAt: { $gt: now } }, { _id: 0, payload: 1, expiresAt: 1 })
+      .lean();
+    if (!doc?.payload) return null;
+    memCache.set(key, {
+      exp: doc.expiresAt ? new Date(doc.expiresAt).getTime() : Date.now() + TTL_MS,
+      data: doc.payload,
+    });
+    return doc.payload;
   } catch {
-    return mem ? { ...mem.payload, cached: true, stale: true } : null;
+    return null;
   }
 }
 
-async function writeCache(key, payload, ttlMs) {
-  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-  memCache.set(key, { payload, expiresAt });
+async function writeCache(key, lat, lon, provider, payload) {
+  memCache.set(key, { exp: Date.now() + TTL_MS, data: payload });
   try {
-    const db = await getSql();
-    await db.query(
-      `INSERT INTO weather_cache (key, payload, fetched_at, expires_at)
-       VALUES ($1, $2, now(), $3)
-       ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now(), expires_at = EXCLUDED.expires_at`,
-      [key, JSON.stringify(payload), expiresAt],
-    );
+    await cacheWeatherMongo(lat, lon, provider, payload, TTL_MS, key);
   } catch {
-    // DB cache is best-effort; memory cache already holds the value.
+    // non-fatal cache write error
   }
 }
 
-function normalize(location, lat, lon, json) {
-  const c = json?.current ?? {};
-  const d = json?.daily ?? {};
-  const fetchedAt = new Date().toISOString();
-  return withFreshness(
-    {
-      location: location ?? null,
-      latitude: Number(lat),
-      longitude: Number(lon),
-      timestamp: c.time ?? fetchedAt,
-      temperature: c.temperature_2m ?? null,
-      feelsLike: c.apparent_temperature ?? null,
-      humidity: c.relative_humidity_2m ?? null,
-      pressure: c.pressure_msl ?? null,
-      windSpeed: c.wind_speed_10m ?? null,
-      windDirection: c.wind_direction_10m ?? null,
-      visibility: c.visibility ?? null,
-      cloudCover: c.cloud_cover ?? null,
-      precipitation: c.precipitation ?? null,
+const WMO_LABELS = {
+  0: "Clear sky",
+  1: "Mainly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Depositing rime fog",
+  51: "Light drizzle",
+  53: "Moderate drizzle",
+  55: "Dense drizzle",
+  61: "Slight rain",
+  63: "Moderate rain",
+  65: "Heavy rain",
+  71: "Slight snow",
+  73: "Moderate snow",
+  75: "Heavy snow",
+  80: "Rain showers",
+  81: "Moderate rain showers",
+  82: "Violent rain showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with hail",
+  99: "Severe thunderstorm with hail",
+};
+
+async function fetchOpenMeteo(lat, lon) {
+  const url = new URL("https://api.open-meteo.com/v1/forecast");
+  url.searchParams.set("latitude", String(lat));
+  url.searchParams.set("longitude", String(lon));
+  url.searchParams.set(
+    "current",
+    "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,cloud_cover,surface_pressure,wind_speed_10m,wind_direction_10m,is_day",
+  );
+  url.searchParams.set(
+    "hourly",
+    "temperature_2m,precipitation_probability,weather_code,wind_speed_10m",
+  );
+  url.searchParams.set(
+    "daily",
+    "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,sunrise,sunset,uv_index_max",
+  );
+  url.searchParams.set("timezone", "auto");
+  url.searchParams.set("forecast_days", "7");
+
+  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(9000) });
+  if (!res.ok) {
+    const err = new Error(`Open-Meteo HTTP ${res.status}`);
+    err.status = 502;
+    err.code = "WEATHER_UPSTREAM_ERROR";
+    throw err;
+  }
+  const j = await res.json();
+  const c = j.current ?? {};
+
+  let aqi = null;
+  try {
+    const aqiUrl = new URL("https://air-quality-api.open-meteo.com/v1/air-quality");
+    aqiUrl.searchParams.set("latitude", String(lat));
+    aqiUrl.searchParams.set("longitude", String(lon));
+    aqiUrl.searchParams.set("current", "us_aqi,pm2_5,pm10");
+    const ar = await fetch(aqiUrl.toString(), { signal: AbortSignal.timeout(5000) });
+    if (ar.ok) {
+      const aj = await ar.json();
+      if (aj.current) {
+        aqi = {
+          usAqi: aj.current.us_aqi ?? null,
+          pm25: aj.current.pm2_5 ?? null,
+          pm10: aj.current.pm10 ?? null,
+        };
+      }
+    }
+  } catch {
+    // optional enrichment
+  }
+
+  return {
+    provider: "open-meteo",
+    coordinates: { lat: j.latitude ?? lat, lon: j.longitude ?? lon },
+    timezone: j.timezone ?? "UTC",
+    elevation: j.elevation ?? null,
+    current: {
+      temperatureC: c.temperature_2m ?? null,
+      apparentTemperatureC: c.apparent_temperature ?? null,
+      humidityPct: c.relative_humidity_2m ?? null,
+      windSpeedKmh: c.wind_speed_10m ?? null,
+      windDirectionDeg: c.wind_direction_10m ?? null,
+      precipitationMm: c.precipitation ?? 0,
+      cloudCoverPct: c.cloud_cover ?? null,
+      pressureHpa: c.surface_pressure ?? null,
       weatherCode: c.weather_code ?? null,
-      condition: CODE_MAP[c.weather_code] ?? (c.weather_code == null ? null : "Unknown"),
-      isDay: c.is_day == null ? null : c.is_day === 1,
-      forecast: Array.isArray(d.time)
-        ? d.time.slice(0, 5).map((date, i) => ({
-            date,
-            tempMax: d.temperature_2m_max?.[i] ?? null,
-            tempMin: d.temperature_2m_min?.[i] ?? null,
-            precipitationProbability: d.precipitation_probability_max?.[i] ?? null,
-            weatherCode: d.weather_code?.[i] ?? null,
-            condition: CODE_MAP[d.weather_code?.[i]] ?? null,
-          }))
-        : [],
-      source: "open-meteo",
-      fetchedAt,
+      condition: WMO_LABELS[c.weather_code] ?? "Variable",
+      isDay: c.is_day === 1,
+      observedAt: c.time ?? new Date().toISOString(),
     },
-    TTL.weatherCurrentMs,
-  );
+    hourly: (j.hourly?.time ?? []).slice(0, 24).map((t, i) => ({
+      time: t,
+      temperatureC: j.hourly.temperature_2m?.[i] ?? null,
+      precipProbPct: j.hourly.precipitation_probability?.[i] ?? null,
+      windSpeedKmh: j.hourly.wind_speed_10m?.[i] ?? null,
+      weatherCode: j.hourly.weather_code?.[i] ?? null,
+      condition: WMO_LABELS[j.hourly.weather_code?.[i]] ?? "Variable",
+    })),
+    daily: (j.daily?.time ?? []).map((d, i) => ({
+      date: d,
+      tempMaxC: j.daily.temperature_2m_max?.[i] ?? null,
+      tempMinC: j.daily.temperature_2m_min?.[i] ?? null,
+      precipSumMm: j.daily.precipitation_sum?.[i] ?? 0,
+      uvIndexMax: j.daily.uv_index_max?.[i] ?? null,
+      sunrise: j.daily.sunrise?.[i] ?? null,
+      sunset: j.daily.sunset?.[i] ?? null,
+      weatherCode: j.daily.weather_code?.[i] ?? null,
+      condition: WMO_LABELS[j.daily.weather_code?.[i]] ?? "Variable",
+    })),
+    airQuality: aqi,
+  };
 }
 
-function metNoSymbolLabel(symbol) {
-  if (!symbol || typeof symbol !== "string") return null;
-  const base = symbol.replace(/_(day|night|polartwilight)$/, "");
-  if (base.includes("thunder")) return "Thunderstorm";
-  if (base.includes("heavyrain")) return "Heavy rain";
-  if (base.includes("lightrain") || base.includes("rainshowers")) return "Light rain";
-  if (base.includes("rain")) return "Rain";
-  if (base.includes("sleet")) return "Sleet";
-  if (base.includes("heavysnow")) return "Heavy snow";
-  if (base.includes("snow")) return "Snow";
-  if (base === "fog") return "Fog";
-  if (base === "cloudy") return "Overcast";
-  if (base === "partlycloudy") return "Partly cloudy";
-  if (base === "fair") return "Mainly clear";
-  if (base === "clearsky") return "Clear sky";
-  return base;
-}
-
-function normalizeMetNo(location, lat, lon, json) {
-  const series = Array.isArray(json?.properties?.timeseries) ? json.properties.timeseries : [];
-  if (!series.length) throw new Error("MET Norway returned empty timeseries");
-  const cur = series[0];
-  const inst = cur?.data?.instant?.details ?? {};
-  const next1 = cur?.data?.next_1_hours ?? cur?.data?.next_6_hours ?? {};
-  const symbol = next1?.summary?.symbol_code ?? cur?.data?.next_6_hours?.summary?.symbol_code ?? null;
-  const byDay = new Map();
-  for (const pt of series) {
-    const date = typeof pt?.time === "string" ? pt.time.slice(0, 10) : null;
-    const t = pt?.data?.instant?.details?.air_temperature;
-    if (!date || typeof t !== "number") continue;
-    const rec = byDay.get(date) ?? { min: t, max: t, precip: 0, symbol: null };
-    rec.min = Math.min(rec.min, t);
-    rec.max = Math.max(rec.max, t);
-    const p = pt?.data?.next_6_hours?.details?.precipitation_amount ?? pt?.data?.next_1_hours?.details?.precipitation_amount ?? 0;
-    rec.precip = Math.max(rec.precip, Number(p) || 0);
-    if (!rec.symbol || pt.time.includes("T12:00")) {
-      rec.symbol = pt?.data?.next_6_hours?.summary?.symbol_code ?? pt?.data?.next_1_hours?.summary?.symbol_code ?? rec.symbol;
-    }
-    byDay.set(date, rec);
+async function fetchMetNorway(lat, lon) {
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "MeridianGeo/1.0 https://github.com/meridian-geo" },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!res.ok) {
+    const err = new Error(`MET Norway HTTP ${res.status}`);
+    err.status = 502;
+    err.code = "WEATHER_UPSTREAM_ERROR";
+    throw err;
   }
-  const fetchedAt = new Date().toISOString();
-  return withFreshness(
-    {
-      location: location ?? null,
-      latitude: Number(lat),
-      longitude: Number(lon),
-      timestamp: cur.time ?? fetchedAt,
-      temperature: inst.air_temperature ?? null,
-      feelsLike: inst.air_temperature ?? null,
-      humidity: inst.relative_humidity ?? null,
-      pressure: inst.air_pressure_at_sea_level ?? null,
-      windSpeed: inst.wind_speed != null ? Math.round(inst.wind_speed * 3.6 * 10) / 10 : null,
-      windDirection: inst.wind_from_direction ?? null,
-      visibility: null,
-      cloudCover: inst.cloud_area_fraction ?? null,
-      precipitation: next1?.details?.precipitation_amount ?? null,
-      weatherCode: null,
-      condition: metNoSymbolLabel(symbol),
-      isDay: typeof symbol === "string" ? !symbol.endsWith("_night") : null,
-      forecast: [...byDay.entries()].slice(0, 5).map(([date, rec]) => ({
-        date,
-        tempMax: Math.round(rec.max * 10) / 10,
-        tempMin: Math.round(rec.min * 10) / 10,
-        precipitationProbability: rec.precip > 0.2 ? 60 : 10,
-        weatherCode: null,
-        condition: metNoSymbolLabel(rec.symbol),
-      })),
-      source: "met-no",
-      fetchedAt,
+  const j = await res.json();
+  const series = j.properties?.timeseries ?? [];
+  const first = series[0]?.data?.instant?.details ?? {};
+  const symbol = series[0]?.data?.next_1_hours?.summary?.symbol_code ?? "partlycloudy";
+  return {
+    provider: "met-norway",
+    coordinates: { lat, lon },
+    timezone: "UTC",
+    current: {
+      temperatureC: first.air_temperature ?? null,
+      apparentTemperatureC: first.air_temperature ?? null,
+      humidityPct: first.relative_humidity ?? null,
+      windSpeedKmh: first.wind_speed != null ? Math.round(first.wind_speed * 3.6 * 10) / 10 : null,
+      windDirectionDeg: first.wind_from_direction ?? null,
+      precipitationMm: series[0]?.data?.next_1_hours?.details?.precipitation_amount ?? 0,
+      cloudCoverPct: first.cloud_area_fraction ?? null,
+      pressureHpa: first.air_pressure_at_sea_level ?? null,
+      condition: symbol.replace(/_/g, " "),
+      isDay: true,
+      observedAt: series[0]?.time ?? new Date().toISOString(),
     },
-    TTL.weatherCurrentMs,
-  );
+    hourly: series.slice(0, 24).map((s) => ({
+      time: s.time,
+      temperatureC: s.data?.instant?.details?.air_temperature ?? null,
+      precipProbPct: null,
+      windSpeedKmh: s.data?.instant?.details?.wind_speed != null
+        ? Math.round(s.data.instant.details.wind_speed * 3.6 * 10) / 10
+        : null,
+      condition: (s.data?.next_1_hours?.summary?.symbol_code ?? "variable").replace(/_/g, " "),
+    })),
+    daily: [],
+    airQuality: null,
+  };
 }
 
-async function fetchJsonWithTimeout(url, headers, timeoutMs = 6500) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, headers });
-    if (!res.ok) throw new Error(`Weather provider responded ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+function formatWeatherResponse(payload, { cached = false, fetchedAt = null, stale = false, location = null } = {}) {
+  const resolvedFetchedAt =
+    fetchedAt || payload.fetchedAt || payload.current?.observedAt || new Date().toISOString();
+  const current = payload.current ?? {};
+  const daily = Array.isArray(payload.daily) ? payload.daily : [];
+  return {
+    ...payload,
+    source: payload.provider ?? payload.source ?? "open-meteo",
+    location: location ?? payload.location ?? null,
+    fetchedAt: resolvedFetchedAt,
+    cached: Boolean(cached),
+    _cached: Boolean(cached),
+    stale: Boolean(stale),
+    temperature: current.temperatureC ?? null,
+    feelsLike: current.apparentTemperatureC ?? null,
+    condition: current.condition ?? null,
+    humidity: current.humidityPct ?? null,
+    windSpeed: current.windSpeedKmh ?? null,
+    windDirection: current.windDirectionDeg ?? null,
+    pressure: current.pressureHpa ?? null,
+    visibility: current.visibilityM ?? null,
+    cloudCover: current.cloudCoverPct ?? null,
+    precipitation: current.precipitationMm ?? null,
+    forecast: daily.slice(0, 5).map((d) => ({
+      date: d.date,
+      condition: d.condition ?? null,
+      tempMin: d.tempMinC ?? null,
+      tempMax: d.tempMaxC ?? null,
+      precipSum: d.precipSumMm ?? null,
+      uvIndexMax: d.uvIndexMax ?? null,
+      sunrise: d.sunrise ?? null,
+      sunset: d.sunset ?? null,
+    })),
+  };
 }
 
-export async function getWeather({ lat, lon, location = null }) {
+export async function getWeather(latOrOpts, maybeLon) {
+  const opts =
+    latOrOpts && typeof latOrOpts === "object"
+      ? latOrOpts
+      : { lat: latOrOpts, lon: maybeLon };
+  const { lat, lon, location = null } = opts;
   if (!validateLatLon(lat, lon)) {
-    throw Object.assign(new Error("Invalid coordinates"), { status: 400, code: "INVALID_COORDS" });
+    const err = new Error("Coordinates must be finite with lat in [-90, 90] and lon in [-180, 180].");
+    err.status = 400;
+    err.code = "INVALID_COORDINATES";
+    throw err;
   }
-  const key = cacheKey(lat, lon);
-  const freshCached = await readCache(key);
-  if (freshCached && !freshCached.stale) return freshCached;
+  const safeLat = Number(lat);
+  const safeLon = Number(lon);
 
-  const openMeteoUrl =
-    `${CURRENT_URL}?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}` +
-    `&current=${CURRENT_FIELDS}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code` +
-    `&hourly=temperature_2m&forecast_days=5&timezone=auto&wind_speed_unit=kmh`;
-  const metNoUrl = `${MET_NO_URL}?lat=${Number(lat).toFixed(4)}&lon=${Number(lon).toFixed(4)}`;
+  const key = cacheKey(safeLat, safeLon);
+  const cached = await readCache(key);
+  if (cached) {
+    return formatWeatherResponse(cached, { cached: true, location });
+  }
 
+  const preferred = (process.env.WEATHER_PROVIDER || "open-meteo").toLowerCase();
+  let data;
   try {
-    let payload;
-    try {
-      const json = await fetchJsonWithTimeout(openMeteoUrl, {
-        accept: "application/json",
-        "user-agent": USER_AGENT,
-      });
-      payload = normalize(location, lat, lon, json);
-    } catch {
-      const json = await fetchJsonWithTimeout(metNoUrl, {
-        accept: "application/json",
-        "user-agent": USER_AGENT,
-      });
-      payload = normalizeMetNo(location, lat, lon, json);
+    data = preferred === "met-norway"
+      ? await fetchMetNorway(safeLat, safeLon)
+      : await fetchOpenMeteo(safeLat, safeLon);
+  } catch (primaryErr) {
+    // Fallback to MET Norway if Open-Meteo fails
+    if (preferred !== "met-norway") {
+      try {
+        data = await fetchMetNorway(safeLat, safeLon);
+      } catch {
+        throw primaryErr;
+      }
+    } else {
+      throw primaryErr;
     }
-    await writeCache(key, payload, TTL.weatherCurrentMs);
-    // Best-effort MongoDB Atlas mirror (TTL 30 min); never blocks/fails.
-    try {
-      const { cacheWeatherMongo } = await import("./mongo.js");
-      await cacheWeatherMongo({ lat, lon, payload, source: payload.source });
-    } catch { /* fallback cache already written */ }
-    return { ...payload, cached: false };
-  } catch (err) {
-    const cached = await readCache(key);
-    if (cached) return { ...cached, stale: true, source: cached.source ?? "open-meteo" };
-    const e = new Error("Weather temporarily unavailable.");
-    e.status = 503;
-    e.code = "WEATHER_UNAVAILABLE";
-    e.cause = err;
-    throw e;
   }
-}
 
-export function weatherCondition(code) {
-  return CODE_MAP[code] ?? null;
+  const fetchedAt = new Date().toISOString();
+  const stored = { ...data, fetchedAt };
+  await writeCache(key, safeLat, safeLon, data.provider, stored);
+  return formatWeatherResponse(stored, { cached: false, fetchedAt, location });
 }

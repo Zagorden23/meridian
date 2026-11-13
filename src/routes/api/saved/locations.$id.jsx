@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { sendData, sendError } from "@/lib/meridian/auth-route.js";
-import { connectMongo } from "@/lib/meridian/mongo.js";
-import { getSessionUser, SavedLocationModel } from "@/lib/meridian/auth-saved.js";
+import { getSessionUser } from "@/lib/meridian/auth-saved.js";
+import { deleteSavedLocation } from "@/lib/meridian/auth-storage.js";
 
 export const Route = createFileRoute("/api/saved/locations/$id")({
   server: {
@@ -14,8 +14,7 @@ export const Route = createFileRoute("/api/saved/locations/$id")({
             err.status = 401; err.code = "SESSION_REQUIRED";
             throw err;
           }
-          await connectMongo();
-          await SavedLocationModel().deleteOne({ _id: params.id, userId: sess.user.id });
+          await deleteSavedLocation(params.id, sess.user.id);
           return sendData({ removed: true });
         } catch (err) { return sendError(err); }
       },

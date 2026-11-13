@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { readJson } from "@/lib/meridian/api-route.js";
 import { sendData, sendError } from "@/lib/meridian/auth-route.js";
-import { getSessionUser, OAUTH_PROVIDERS, publicUser, User } from "@/lib/meridian/auth.js";
+import { getSessionUser, OAUTH_PROVIDERS, publicUser } from "@/lib/meridian/auth.js";
+import { findUserById, saveUser } from "@/lib/meridian/auth-storage.js";
 
 // POST /api/auth/unlink-provider { provider } — authenticated users may
 // detach a provider as long as another sign-in method remains.
@@ -23,16 +24,13 @@ export const Route = createFileRoute("/api/auth/unlink-provider")({
             err.status = 400; err.code = "UNKNOWN_PROVIDER";
             throw err;
           }
-          const user = await User().findById(sess.user.id).select("+passwordHash +passwordSalt");
+          const user = await findUserById(sess.user.id, { includeSecrets: true });
           if (!user) {
             const err = new Error("Account not found.");
             err.status = 404; err.code = "NOT_FOUND";
             throw err;
           }
           const remaining = (user.authProviders ?? []).filter((p) => p.provider !== provider);
-          // Commercial guard: never strand an account with zero ways back in.
-          // A remaining OAuth/email/phone provider is enough; otherwise a
-          // verified email/phone or a password credential must stay.
           const hasOtherMethod = remaining.length > 0
             || Boolean(user.passwordHash && provider !== "password")
             || Boolean(user.emailVerified && provider !== "email")
@@ -46,10 +44,11 @@ export const Route = createFileRoute("/api/auth/unlink-provider")({
           if (provider === "password") {
             user.passwordHash = undefined;
             user.passwordSalt = undefined;
+            user.passwordUpdatedAt = undefined;
           }
           user.updatedAt = new Date();
-          await user.save();
-          return sendData({ user: publicUser(user) });
+          const saved = await saveUser(user);
+          return sendData({ user: publicUser(saved) });
         } catch (err) { return sendError(err); }
       },
     },

@@ -20,7 +20,9 @@ export const Route = createFileRoute("/api/flights/search")({
                 status: 400, code: "UNKNOWN_AIRPORT",
               });
             }
-            const same = origin.country_id && origin.country_id === destination.country_id;
+            const originCountry = origin.countryId ?? origin.country_id ?? null;
+            const destCountry = destination.countryId ?? destination.country_id ?? null;
+            const same = originCountry && originCountry === destCountry;
             if (body.tripType === "domestic" && !same) {
               throw Object.assign(
                 new Error("Domestic flights require origin and destination in the same country."),
@@ -33,8 +35,8 @@ export const Route = createFileRoute("/api/flights/search")({
                 { status: 400, code: "INTERNATIONAL_SAME_COUNTRY" },
               );
             }
-            body.originCountry = origin.country_id;
-            body.destinationCountry = destination.country_id;
+            body.originCountry = originCountry;
+            body.destinationCountry = destCountry;
           }
           // Provider adapter validates + queries (or explains unavailability).
           return { data: await searchFlights(body), source: "flight-provider" };

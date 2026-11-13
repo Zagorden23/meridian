@@ -145,7 +145,8 @@ function AccountMenu() {
 
   if (status !== "AUTHENTICATED" || !user) return null;
 
-  const initial = (user.name ?? user.email ?? "?").trim().charAt(0).toUpperCase();
+  const initialSource = (user.name ?? user.email ?? "").trim();
+  const initial = initialSource ? initialSource.charAt(0).toUpperCase() : "M";
   const methods = (user.providers ?? []).map((p) => PROVIDER_LABEL[p] ?? p);
 
   const out = async () => {
@@ -180,7 +181,9 @@ function AccountMenu() {
         <div ref={menuRef} role="menu" aria-label="Account" className="animate-enter absolute right-0 top-11 w-64 rounded-2xl border border-border bg-bg p-2 shadow-border">
           <div className="px-3 py-2">
             <p className="truncate text-sm font-medium">{user.name ?? "Meridian member"}</p>
-            {user.email && <p className="truncate text-xs text-subtle">{user.email}</p>}
+            {(user.email || user.phone) && (
+              <p className="truncate text-xs text-subtle">{user.email ?? user.phone}</p>
+            )}
             {methods.length > 0 && (
               <p className="mt-1 truncate text-[10px] uppercase tracking-label text-subtle">
                 {methods.join(" · ")}

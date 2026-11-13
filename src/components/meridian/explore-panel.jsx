@@ -101,7 +101,7 @@ export function ExplorePanel() {
               <li key={c.id}>
                 <button type="button" onClick={() => flyTo("CITY", c, c.latitude, c.longitude)} className={cn("flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-left text-sm", ROW)}>
                   <span className="truncate font-medium">{c.name}</span>
-                  <span className="shrink-0 text-xs text-subtle">{countries?.find((cc) => cc.id === c.country_id)?.name ?? c.country_id}</span>
+                  <span className="shrink-0 text-xs text-subtle">{c.countryName ?? countries?.find((cc) => cc.id === (c.countryId ?? c.country_id))?.name ?? c.countryId ?? c.country_id}</span>
                 </button>
               </li>
             ))}

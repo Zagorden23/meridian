@@ -104,7 +104,7 @@ export function ProviderButtonsSkeleton({ rows = 3 }) {
   );
 }
 
-export function ProviderButtons({ providers, busy, pendingId, onStart, onRefresh }) {
+export function ProviderButtons({ providers, mode = "signin", busy, pendingId, onStart, onRefresh }) {
   const [openSetup, setOpenSetup] = useState(null);
   return (
     <ul className="space-y-2.5">
@@ -145,7 +145,11 @@ export function ProviderButtons({ providers, busy, pendingId, onStart, onRefresh
                 ? <Loader2 className="size-5 shrink-0 animate-spin text-muted" aria-hidden />
                 : Mark && <Mark className="size-5 shrink-0" />}
               <span className="min-w-0 flex-1 truncate">
-                {waiting ? `Connecting to ${label}…` : `Continue with ${label}`}
+                {waiting
+                  ? `Connecting to ${label}…`
+                  : mode === "signup"
+                    ? `Sign up with ${label}`
+                    : `Continue with ${label}`}
               </span>
             </button>
           </li>

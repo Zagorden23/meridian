@@ -92,7 +92,7 @@ export function LocationPanel() {
 
   // Resolve country id → display name (search rows carry only the id).
   useEffect(() => {
-    const id = location?.country ?? location?.raw?.country_id;
+    const id = location?.country ?? location?.raw?.countryId ?? location?.raw?.country_id;
     const embedded = location?.raw?.countryName;
     if (embedded) {
       setCountryName(embedded);
@@ -212,7 +212,7 @@ export function LocationPanel() {
         {tab === "Overview" && (
           <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
             {raw.region && <Stat label="Region" value={raw.region} />}
-            {(location.country || raw.country_id) && <Stat label="Country" value={countryName ?? location.country ?? raw.country_id} />}
+            {(location.country || raw.countryId || raw.country_id) && <Stat label="Country" value={countryName ?? location.country ?? raw.countryId ?? raw.country_id} />}
             {raw.state_code && <Stat label="State" value={raw.state_code} />}
             {hasCoords && <Stat label="Coordinates" value={formatCoord(lat, lon)} />}
             {raw.timezone && <Stat label="Timezone" value={raw.timezone} />}

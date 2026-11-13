@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { readJson } from "@/lib/meridian/api-route.js";
 import { sendData, sendError } from "@/lib/meridian/auth-route.js";
-import { connectMongo } from "@/lib/meridian/mongo.js";
-import { getSessionUser, SavedLocationModel } from "@/lib/meridian/auth-saved.js";
+import { getSessionUser } from "@/lib/meridian/auth-saved.js";
+import { listSavedLocations, upsertSavedLocation } from "@/lib/meridian/auth-storage.js";
 
 async function requireUser(request) {
   const sess = await getSessionUser(request);
@@ -21,9 +21,8 @@ export const Route = createFileRoute("/api/saved/locations")({
       async GET({ request }) {
         try {
           const user = await requireUser(request);
-          await connectMongo();
-          const rows = await SavedLocationModel().find({ userId: user.id }).sort({ createdAt: -1 }).limit(500).lean();
-          return sendData(rows.map((r) => ({ ...r, id: String(r._id) })));
+          const rows = await listSavedLocations(user.id);
+          return sendData(rows);
         } catch (err) { return sendError(err); }
       },
       async POST({ request }) {
@@ -37,21 +36,14 @@ export const Route = createFileRoute("/api/saved/locations")({
             err.status = 400; err.code = "INVALID_SAVED";
             throw err;
           }
-          await connectMongo();
-          const key = `${body.kind}:${body.id ?? body.name}`;
-          const doc = await SavedLocationModel().findOneAndUpdate(
-            { userId: user.id, key },
-            {
-              $set: {
-                userId: user.id, key, kind: String(body.kind).slice(0, 24),
-                refId: String(body.id ?? "").slice(0, 160),
-                name: String(body.name).slice(0, 160),
-                latitude: lat, longitude: lon,
-              },
-            },
-            { upsert: true, new: true },
-          ).lean();
-          return sendData({ ...doc, id: String(doc._id) });
+          const doc = await upsertSavedLocation(user.id, {
+            kind: body.kind,
+            id: body.id,
+            name: body.name,
+            lat,
+            lon,
+          });
+          return sendData(doc);
         } catch (err) { return sendError(err); }
       },
     },

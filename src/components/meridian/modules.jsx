@@ -5,7 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/meridian/api-client.js";
-import { apiErrorMessage, PROVIDER_LABEL } from "@/lib/meridian/auth-messages.js";
+import { apiErrorMessage, authErrorMessage, PROVIDER_LABEL } from "@/lib/meridian/auth-messages.js";
+import { COUNTRY_CODES } from "@/lib/meridian/country-codes.js";
+import { OtpBoxes } from "@/components/auth/auth-forms.jsx";
 import { useAuthPrompt } from "@/lib/meridian/use-auth-prompt.js";
 import { useMeridianStore } from "@/store/meridian-store.js";
 import { useGlobeStore } from "@/store/globe-store.js";
@@ -294,6 +296,263 @@ export function PersonalPanel() {
  * same verified OAuth flow, so a provider is never attached twice and a
  * matching email never silently merges two accounts.
  */
+function EmailLinkControl({ user, canDeliver }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState(user.email ?? "");
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [devCode, setDevCode] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) setEmail(user.email ?? "");
+  }, [open, user.email]);
+
+  const send = async (e) => {
+    e.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      const res = await api.requestEmailOtp(email.trim(), "link_email");
+      setSent(true);
+      setCode("");
+      setDevCode(res.data?.devCode ?? "");
+      toast.success("Verification code sent to your email.");
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const confirm = async (e) => {
+    e.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      const res = await api.linkEmail(email.trim(), code);
+      useAuthStore.getState().updateUser(res.data.user);
+      toast.success("Email verified and linked.");
+      setOpen(false);
+      setSent(false);
+      setCode("");
+      setDevCode("");
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const label = !user.email ? "Add email" : user.emailVerified ? "Change" : "Verify";
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Email</p>
+          <p className="truncate text-xs text-subtle">
+            {user.email
+              ? `${user.email}${user.emailIsPrivateRelay ? " · Apple private relay" : user.emailVerified ? " · Verified" : " · Not yet confirmed"}`
+              : "Not added"}
+          </p>
+        </div>
+        {canDeliver && !open && (
+          <button
+            type="button"
+            onClick={() => { setOpen(true); setSent(false); setError(""); }}
+            className={cn(quietButtonClass, "shrink-0 px-2.5 py-1.5 text-xs")}
+          >
+            {label}
+          </button>
+        )}
+      </div>
+      {open && (
+        <form onSubmit={sent ? confirm : send} noValidate className="animate-enter mt-3 space-y-2.5">
+          {!sent ? (
+            <label className="block text-xs text-muted">
+              Email address
+              <input
+                type="email"
+                value={email}
+                disabled={pending}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className={cn(inputClass, "mt-1")}
+              />
+            </label>
+          ) : (
+            <>
+              <p className="text-xs text-muted">
+                Enter the 6-digit code sent to <span className="text-fg">{email.trim()}</span>.
+              </p>
+              <OtpBoxes value={code} onChange={setCode} disabled={pending} autoFocus />
+              {devCode && (
+                <p className="flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted">
+                  <span>Dev code: <span className="font-mono font-semibold text-fg">{devCode}</span></span>
+                  <button type="button" onClick={() => setCode(devCode)} className="text-fg underline underline-offset-2">
+                    Fill
+                  </button>
+                </p>
+              )}
+            </>
+          )}
+          {error && <p role="alert" className="text-xs text-fg/90">{error}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setSent(false); setCode(""); setError(""); setDevCode(""); }}
+              disabled={pending}
+              className={cn(quietButtonClass, "flex-1")}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={pending || (!sent ? !email.trim() : code.length !== 6)}
+              className={cn(primaryButtonClass, "flex-1")}
+            >
+              {pending ? "Working…" : sent ? "Verify & save" : "Send code"}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function PhoneLinkControl({ user, canDeliver }) {
+  const [open, setOpen] = useState(false);
+  const [cc, setCc] = useState("+1");
+  const [phone, setPhone] = useState("");
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [devCode, setDevCode] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  const send = async (e) => {
+    e.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      const res = await api.requestPhoneOtp(phone, cc, "link_phone");
+      setSent(true);
+      setCode("");
+      setDevCode(res.data?.devCode ?? "");
+      toast.success("Verification code sent by SMS.");
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const confirm = async (e) => {
+    e.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      const res = await api.linkPhone(phone, cc, code);
+      useAuthStore.getState().updateUser(res.data.user);
+      toast.success("Phone number verified and linked.");
+      setOpen(false);
+      setSent(false);
+      setPhone("");
+      setCode("");
+      setDevCode("");
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Phone number</p>
+          <p className="truncate text-xs text-subtle">
+            {user.phone ? `${user.phone}${user.phoneVerified ? " · Verified" : ""}` : "Not added"}
+          </p>
+        </div>
+        {canDeliver && !open && (
+          <button
+            type="button"
+            onClick={() => { setOpen(true); setSent(false); setError(""); }}
+            className={cn(quietButtonClass, "shrink-0 px-2.5 py-1.5 text-xs")}
+          >
+            {user.phone ? "Change" : "Add phone"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <form onSubmit={sent ? confirm : send} noValidate className="animate-enter mt-3 space-y-2.5">
+          {!sent ? (
+            <div className="flex gap-2">
+              <select
+                value={cc}
+                disabled={pending}
+                aria-label="Country dial code"
+                onChange={(e) => setCc(e.target.value)}
+                className={cn(inputClass, "w-28 shrink-0 px-2")}
+              >
+                {COUNTRY_CODES.map((c) => (
+                  <option key={`${c.code}-${c.name}`} value={c.code}>
+                    {c.code} · {c.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="tel"
+                value={phone}
+                disabled={pending}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="415 555 0199"
+                className={cn(inputClass, "min-w-0 flex-1")}
+              />
+            </div>
+          ) : (
+            <>
+              <p className="text-xs text-muted">
+                Enter the 6-digit code sent to <span className="text-fg">{cc} {phone.trim()}</span>.
+              </p>
+              <OtpBoxes value={code} onChange={setCode} disabled={pending} autoFocus />
+              {devCode && (
+                <p className="flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted">
+                  <span>Dev code: <span className="font-mono font-semibold text-fg">{devCode}</span></span>
+                  <button type="button" onClick={() => setCode(devCode)} className="text-fg underline underline-offset-2">
+                    Fill
+                  </button>
+                </p>
+              )}
+            </>
+          )}
+          {error && <p role="alert" className="text-xs text-fg/90">{error}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setSent(false); setCode(""); setError(""); setDevCode(""); }}
+              disabled={pending}
+              className={cn(quietButtonClass, "flex-1")}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={pending || (!sent ? !phone.trim() : code.length !== 6)}
+              className={cn(primaryButtonClass, "flex-1")}
+            >
+              {pending ? "Working…" : sent ? "Verify & save" : "Send code"}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function ConnectedAccounts() {
   const promptAuth = useAuthPrompt();
   const status = useAuthStore((s) => s.status);
@@ -337,9 +596,11 @@ function ConnectedAccounts() {
     <Panel kicker="Account" title="Sign-in methods">
       <div className="mb-3 min-w-0">
         <p className="truncate text-sm font-medium">{user.name ?? "Meridian member"}</p>
-        {user.email && (
+        {(user.email || user.phone) && (
           <p className="truncate text-xs text-subtle">
-            {user.email}{user.emailIsPrivateRelay ? " · Apple private relay" : user.emailVerified ? "" : " · not yet confirmed"}
+            {user.email
+              ? `${user.email}${user.emailIsPrivateRelay ? " · Apple private relay" : user.emailVerified ? "" : " · not yet confirmed"}`
+              : user.phone}
           </p>
         )}
       </div>
@@ -379,6 +640,8 @@ function ConnectedAccounts() {
           </div>
         </>
       )}
+      <EmailLinkControl user={user} canDeliver={caps?.emailOtp?.configured === true} />
+      <PhoneLinkControl user={user} canDeliver={caps?.phoneOtp?.configured === true} />
       <PasswordSettings />
     </Panel>
   );
@@ -390,13 +653,13 @@ function PasswordSettings() {
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [pending, setPending] = useState(false);
+  const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState("");
   if (!user) return null;
 
   const has = Boolean(user.hasPassword);
-  // Signed in by proving the mailbox: the forgotten password can be replaced
-  // without typing the old one. The server applies the same rule.
   const recovering = has && sessionMethod === "email" && user.emailVerified;
   const needsCurrent = has && !recovering;
   const canSet = has || Boolean(user.email);
@@ -405,7 +668,11 @@ function PasswordSettings() {
     event.preventDefault();
     setError("");
     if (next.length < 8) {
-      setError("Use a password with at least 8 characters.");
+      setError(authErrorMessage("WEAK_PASSWORD"));
+      return;
+    }
+    if (next !== confirm) {
+      setError(authErrorMessage("PASSWORD_MISMATCH"));
       return;
     }
     setPending(true);
@@ -417,11 +684,25 @@ function PasswordSettings() {
       setOpen(false);
       setCurrent("");
       setNext("");
+      setConfirm("");
     } catch (err) {
       if (err?.status === 401 && err?.code === "SESSION_REQUIRED") useAuthStore.getState().sessionExpired();
       setError(err?.code === "INVALID_CREDENTIALS" ? "Current password is incorrect." : apiErrorMessage(err));
     } finally {
       setPending(false);
+    }
+  };
+
+  const signOutOthers = async () => {
+    setRevoking(true);
+    try {
+      const res = await api.revokeSessions();
+      const count = res.data?.signedOut ?? 0;
+      toast.success(count > 0 ? `Signed out ${count} other session${count === 1 ? "" : "s"}.` : "No other active sessions found.");
+    } catch (err) {
+      toast.error(apiErrorMessage(err));
+    } finally {
+      setRevoking(false);
     }
   };
 
@@ -442,7 +723,6 @@ function PasswordSettings() {
       </div>
       {open && (
         <form onSubmit={submit} noValidate className="animate-enter mt-3 space-y-2">
-          {/* Lets password managers file the new password under the right account. */}
           <input type="text" name="username" autoComplete="username" value={user.email ?? ""} readOnly hidden />
           {needsCurrent && (
             <label className="block text-xs text-muted">Current password
@@ -457,17 +737,35 @@ function PasswordSettings() {
             <input type="password" name="new-password" autoComplete="new-password" value={next} disabled={pending}
               onChange={(e) => setNext(e.target.value)} className={cn(inputClass, "mt-1")} />
           </label>
+          <label className="block text-xs text-muted">Confirm new password
+            <input type="password" name="confirm-new-password" autoComplete="new-password" value={confirm} disabled={pending}
+              onChange={(e) => setConfirm(e.target.value)} className={cn(inputClass, "mt-1")} />
+          </label>
           {error && <p role="alert" className="text-xs text-fg/90">{error}</p>}
           <div className="flex gap-2 pt-1">
-            <button type="button" onClick={() => { setOpen(false); setError(""); setCurrent(""); setNext(""); }} disabled={pending} className={cn(quietButtonClass, "flex-1")}>
+            <button type="button" onClick={() => { setOpen(false); setError(""); setCurrent(""); setNext(""); setConfirm(""); }} disabled={pending} className={cn(quietButtonClass, "flex-1")}>
               Cancel
             </button>
-            <button type="submit" disabled={pending || !next || (needsCurrent && !current)} className={cn(primaryButtonClass, "flex-1")}>
+            <button type="submit" disabled={pending || !next || !confirm || (needsCurrent && !current)} className={cn(primaryButtonClass, "flex-1")}>
               {pending ? "Saving…" : has ? "Change password" : "Set password"}
             </button>
           </div>
         </form>
       )}
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/70 pt-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Sessions</p>
+          <p className="text-xs text-subtle">Revoke access on other browsers</p>
+        </div>
+        <button
+          type="button"
+          onClick={signOutOthers}
+          disabled={revoking}
+          className={cn(quietButtonClass, "shrink-0 px-2.5 py-1.5 text-xs")}
+        >
+          {revoking ? "Signing out…" : "Sign out others"}
+        </button>
+      </div>
     </div>
   );
 }

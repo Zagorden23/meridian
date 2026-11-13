@@ -24,11 +24,16 @@ import { Route as ApiAiChatRouteImport } from './routes/api/ai/chat'
 import { Route as ApiAirlinesIdRouteImport } from './routes/api/airlines/$id'
 import { Route as ApiAirportsIdRouteImport } from './routes/api/airports/$id'
 import { Route as ApiAuthProviderRouteImport } from './routes/api/auth/$provider'
+import { Route as ApiAuthForgotPasswordRouteImport } from './routes/api/auth/forgot-password'
+import { Route as ApiAuthLinkEmailRouteImport } from './routes/api/auth/link-email'
+import { Route as ApiAuthLinkPhoneRouteImport } from './routes/api/auth/link-phone'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiAuthPasswordRouteImport } from './routes/api/auth/password'
 import { Route as ApiAuthProvidersRouteImport } from './routes/api/auth/providers'
 import { Route as ApiAuthRequestEmailOtpRouteImport } from './routes/api/auth/request-email-otp'
 import { Route as ApiAuthRequestPhoneOtpRouteImport } from './routes/api/auth/request-phone-otp'
+import { Route as ApiAuthResetPasswordRouteImport } from './routes/api/auth/reset-password'
+import { Route as ApiAuthRevokeSessionsRouteImport } from './routes/api/auth/revoke-sessions'
 import { Route as ApiAuthSessionRouteImport } from './routes/api/auth/session'
 import { Route as ApiAuthSigninPasswordRouteImport } from './routes/api/auth/signin-password'
 import { Route as ApiAuthSignupPasswordRouteImport } from './routes/api/auth/signup-password'
@@ -125,6 +130,21 @@ const ApiAuthProviderRoute = ApiAuthProviderRouteImport.update({
   path: '/api/auth/$provider',
   getParentRoute: () => rootRouteImport,
 })
+const ApiAuthForgotPasswordRoute = ApiAuthForgotPasswordRouteImport.update({
+  id: '/api/auth/forgot-password',
+  path: '/api/auth/forgot-password',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthLinkEmailRoute = ApiAuthLinkEmailRouteImport.update({
+  id: '/api/auth/link-email',
+  path: '/api/auth/link-email',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthLinkPhoneRoute = ApiAuthLinkPhoneRouteImport.update({
+  id: '/api/auth/link-phone',
+  path: '/api/auth/link-phone',
+  getParentRoute: () => rootRouteImport,
+})
 const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   id: '/api/auth/logout',
   path: '/api/auth/logout',
@@ -148,6 +168,16 @@ const ApiAuthRequestEmailOtpRoute = ApiAuthRequestEmailOtpRouteImport.update({
 const ApiAuthRequestPhoneOtpRoute = ApiAuthRequestPhoneOtpRouteImport.update({
   id: '/api/auth/request-phone-otp',
   path: '/api/auth/request-phone-otp',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthResetPasswordRoute = ApiAuthResetPasswordRouteImport.update({
+  id: '/api/auth/reset-password',
+  path: '/api/auth/reset-password',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthRevokeSessionsRoute = ApiAuthRevokeSessionsRouteImport.update({
+  id: '/api/auth/revoke-sessions',
+  path: '/api/auth/revoke-sessions',
   getParentRoute: () => rootRouteImport,
 })
 const ApiAuthSessionRoute = ApiAuthSessionRouteImport.update({
@@ -313,11 +343,16 @@ const rootRouteChildren = {
   ApiAdminSeedRoute: ApiAdminSeedRoute,
   ApiAiChatRoute: ApiAiChatRoute,
   ApiAuthProviderRoute: ApiAuthProviderRouteWithChildren,
+  ApiAuthForgotPasswordRoute: ApiAuthForgotPasswordRoute,
+  ApiAuthLinkEmailRoute: ApiAuthLinkEmailRoute,
+  ApiAuthLinkPhoneRoute: ApiAuthLinkPhoneRoute,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthRequestEmailOtpRoute: ApiAuthRequestEmailOtpRoute,
   ApiAuthRequestPhoneOtpRoute: ApiAuthRequestPhoneOtpRoute,
+  ApiAuthResetPasswordRoute: ApiAuthResetPasswordRoute,
+  ApiAuthRevokeSessionsRoute: ApiAuthRevokeSessionsRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
   ApiAuthSigninPasswordRoute: ApiAuthSigninPasswordRoute,
   ApiAuthSignupPasswordRoute: ApiAuthSignupPasswordRoute,

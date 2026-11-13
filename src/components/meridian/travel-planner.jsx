@@ -200,13 +200,13 @@ function EndpointForm({ countryId, states, cities, airports, value, onChange }) 
     if (!value.state) return cities;
     const st = states.find((s) => s.id === value.state);
     if (!st) return cities;
-    const byState = cities.filter((c) => c.state_id === value.state);
+    const byState = cities.filter((c) => (c.stateId ?? c.state_id) === value.state);
     return byState.length ? byState : cities;
   }, [value.state, cities, states]);
   const cityAirports = useMemo(() => {
     let list = airports;
-    if (value.city) list = list.filter((a) => a.city_id === value.city);
-    else if (countryId) list = list.filter((a) => a.country_id === countryId);
+    if (value.city) list = list.filter((a) => (a.cityId ?? a.city_id) === value.city);
+    else if (countryId) list = list.filter((a) => (a.countryId ?? a.country_id) === countryId);
     return list;
   }, [value.city, airports, countryId]);
 

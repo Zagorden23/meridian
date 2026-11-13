@@ -11,6 +11,7 @@ async function req(path, { method = "GET", body, signal } = {}) {
     const err = new Error(json?.error?.message ?? `Request failed (${res.status})`);
     err.code = json?.error?.code ?? "REQUEST_FAILED";
     err.status = res.status;
+    if (json?.error?.details) err.details = json.error.details;
     throw err;
   }
   return json;
@@ -73,11 +74,16 @@ export const api = {
   authProviders: () => req("/api/auth/providers"),
   signupPassword: (email, password, name) => req("/api/auth/signup-password", { method: "POST", body: { email, password, name } }),
   signinPassword: (email, password) => req("/api/auth/signin-password", { method: "POST", body: { email, password } }),
-  requestEmailOtp: (email) => req("/api/auth/request-email-otp", { method: "POST", body: { email } }),
-  verifyEmailOtp: (email, code, name) => req("/api/auth/verify-email-otp", { method: "POST", body: { email, code, name } }),
-  requestPhoneOtp: (phone, countryCode) => req("/api/auth/request-phone-otp", { method: "POST", body: { phone, countryCode } }),
+  forgotPassword: (email) => req("/api/auth/forgot-password", { method: "POST", body: { email } }),
+  resetPassword: (email, code, newPassword) => req("/api/auth/reset-password", { method: "POST", body: { email, code, newPassword } }),
+  requestEmailOtp: (email, purpose) => req("/api/auth/request-email-otp", { method: "POST", body: { email, ...(purpose ? { purpose } : {}) } }),
+  verifyEmailOtp: (email, code, name, purpose) => req("/api/auth/verify-email-otp", { method: "POST", body: { email, code, name, ...(purpose ? { purpose } : {}) } }),
+  requestPhoneOtp: (phone, countryCode, purpose) => req("/api/auth/request-phone-otp", { method: "POST", body: { phone, countryCode, ...(purpose ? { purpose } : {}) } }),
   verifyPhoneOtp: (phone, countryCode, code, name) => req("/api/auth/verify-phone-otp", { method: "POST", body: { phone, countryCode, code, name } }),
+  linkEmail: (email, code) => req("/api/auth/link-email", { method: "POST", body: { email, code } }),
+  linkPhone: (phone, countryCode, code) => req("/api/auth/link-phone", { method: "POST", body: { phone, countryCode, code } }),
   setPassword: (currentPassword, newPassword) => req("/api/auth/password", { method: "POST", body: { currentPassword, newPassword } }),
+  revokeSessions: () => req("/api/auth/revoke-sessions", { method: "POST" }),
   logout: () => req("/api/auth/logout", { method: "POST" }),
   unlinkProvider: (provider) => req("/api/auth/unlink-provider", { method: "POST", body: { provider } }),
   savedList: () => req("/api/saved/locations"),

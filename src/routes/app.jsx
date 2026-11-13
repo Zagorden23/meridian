@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { MeridianUI } from "@/components/meridian/meridian-ui";
-import { authErrorMessage } from "@/lib/meridian/auth-messages.js";
+import { authErrorMessage, PROVIDER_LABEL } from "@/lib/meridian/auth-messages.js";
 import { canUseApp, useAuthStore } from "@/store/auth-store.js";
 import { MODULE_IDS, useMeridianStore } from "@/store/meridian-store.js";
 
@@ -74,6 +74,18 @@ function App() {
       navigate({ to: "/auth", search: section ? { returnTo: `/app?m=${section}` } : undefined, replace: true });
     }
   }, [status, initialized, navigate, section]);
+
+  useEffect(() => {
+    if (status !== "AUTHENTICATED" || typeof document === "undefined") return;
+    const match = document.cookie.match(/(?:^|;\s*)meridian_auth_notice=([^;]+)/);
+    if (!match) return;
+    document.cookie = "meridian_auth_notice=; Path=/; Max-Age=0; SameSite=Lax";
+    const [kind, provider] = decodeURIComponent(match[1]).split(":");
+    const label = PROVIDER_LABEL[provider] ?? provider ?? "Account";
+    if (kind === "linked") toast.success(`${label} connected.`);
+    else if (kind === "created") toast.success("Account created — welcome to Meridian.");
+    else if (kind === "signin") toast.success("Welcome back.");
+  }, [status]);
 
   useEffect(() => {
     // A failed provider link comes back here (a signed-in person never sees

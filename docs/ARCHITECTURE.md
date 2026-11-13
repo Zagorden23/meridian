@@ -14,15 +14,13 @@
   `globe-canvas.jsx` → R3F `<Canvas>`) plus `<Hud/>` overlay. Document shell in
   `__root.jsx` keeps `<AuthProvider>` + `<PreviewHostBridge/>` (platform
   chrome — never remove).
-- **DB:** `src/lib/db.js` — Neon (`pg` pool) when `DATABASE_URL` is set,
-  otherwise embedded **PGLite** (Postgres/WASM) with `migrations/*.sql`
-  auto-applied and tracked in `_migrations`. `scripts/migrate.mjs` applies the
-  same files on deploy (`npm run build` → `vite build && npm run db:migrate`).
-  No app tables exist yet (`migrations/` holds only opt-in `auth/`).
-- **Server surface:** `createServerFn` helpers (`src/lib/app-data/`,
-  `src/lib/auth/`). No REST API routes yet. Dev on `0.0.0.0:8080` via
-  `scripts/with-app-env.mjs`; `startup.sh` owns the restart contract.
-- **Deploy target:** Render web service + Postgres (`render.yaml` to be added).
+- **DB:** MongoDB via Mongoose (`src/lib/meridian/mongo.js` & `auth-models.js`)
+  with `2dsphere` geospatial indexes on `cities`, `airports`, `countries`, and
+  `pois`, plus TTL indexes on `weatherSnapshots`, `otpCodes`, and `authSessions`.
+- **Server surface:** REST API routes under `src/routes/api/` backed purely by
+  MongoDB. Dev on `0.0.0.0:8080` via `scripts/with-app-env.mjs`; `startup.sh`
+  owns the restart contract.
+- **Deploy target:** Render web service (`render.yaml`).
   Never writes `.env`; only `VITE_`-prefixed vars reach the browser.
 
 ## 2. Existing components (retain as-is)
@@ -43,7 +41,7 @@
 ## 3. Existing dependencies
 
 `three`, `@react-three/fiber`, `@react-three/drei`, `camera-controls`,
-`zustand`, `@tanstack/*`, `pg`, `@electric-sql/pglite`, `kysely`, `zod`,
+`zustand`, `@tanstack/*`, `mongoose`, `mongodb`, `zod`,
 `lucide-react`, Radix set, `recharts`. **No new runtime deps required** for
 the platform layers below (2D map is dependency-free canvas; weather uses
 `fetch`; OpenSky needs no SDK). Keep it that way.
@@ -65,8 +63,8 @@ None (app routes only). New surface follows the envelope in §8 and lives in
 
 Everything in §2, the MERIDIAN identity (cinematic/observatory/dark/editorial
 tokens in `styles.css` + `lib/theme.js`), JS-only rule (no TS/TSX), globe as
-visual centerpiece, orbit/drag/zoom/tour/keyboard behavior, PGLite↔Neon
-abstraction, `startup.sh` + preview contracts.
+visual centerpiece, orbit/drag/zoom/tour/keyboard behavior, MongoDB geo
+queries (`$geoNear` + bounding box), `startup.sh` + preview contracts.
 
 ## 7. What must be extended
 
@@ -80,7 +78,7 @@ perf → tests → Render deploy. Gated order per spec (GATE 1 → GATE 14).
 ```text
 3D Globe (three, kept) ⇄ MapAdapter ⇄ 2D Map (canvas, new)
             ⇄ React UI (sidebar/search/panels, new) ⇄ /api/* (new)
-            ⇄ services (src/lib/meridian/*, new) ⇄ PGLite/Neon (new tables)
+            ⇄ services (src/lib/meridian/*) ⇄ MongoDB (Mongoose models + 2dsphere)
             ⇄ providers: Open-Meteo (weather, keyless) / OpenSky (live
                positions, keyless, coverage-limited) / licensed schedule
                APIs (key-gated, honest "unavailable" states)
@@ -88,23 +86,22 @@ perf → tests → Render deploy. Gated order per spec (GATE 1 → GATE 14).
 
 - **Envelope:** `{ success, data, meta: { source, fetchedAt, cached,
   requestId } }`; errors `{ success:false, error:{code,message}, requestId }`.
-- **PostGIS decision:** PGLite (preview) has no PostGIS, so geo queries are
-  portable SQL (`lat/lon` columns, bbox + bounding indexes, haversine in JS).
-  Repository abstraction (`geo-repository.js`) owns all SQL — swapping in
-  PostGIS later touches one file.
+- **Spatial decision:** Geo queries use MongoDB native `$geoNear` (`2dsphere`
+  indexed `location` GeoJSON points) paired with viewport bounding-box
+  range queries and pure-JS Haversine math (`geo-math.js`).
 - **No fake data:** every dynamic panel shows `source · updated X ago`; missing
   provider coverage renders explicit unavailable states, never invented values.
 - **Perf:** LOD markers (featured → capitals → viewport query), debounced
   search, short-TTL weather cache, one polling loop per tracked flight shared
   across clients, no WS server (poll + interpolate; upgrade path documented).
 
-## 9. Migration strategy
+## 9. Seeding & collection strategy
 
 1. Additive only: new files under `src/lib/meridian/`, `src/routes/api/`,
    `src/components/meridian/`; store extended with new slices (old keys
-   untouched). `PLACES` remains the featured fallback if the DB is empty.
-2. `migrations/0001_meridian_geo.sql` creates all tables `IF NOT EXISTS`;
-   `scripts/import-geodata.js` (idempotent `ON CONFLICT DO NOTHING` + source
-   keys) seeds curated real-coordinate data; `--geonames` ingests dumps.
+   untouched). `PLACES` remains the featured fallback while loading.
+2. MongoDB collections + `2dsphere` / TTL indexes initialize automatically;
+   `GeoRepository` auto-seeds curated real-coordinate data when empty and
+   `scripts/import-geodata.js --geonames` ingests GeoNames dumps idempotently.
 3. After every gate: run app, exercise old + new paths, check console/network,
    fix regressions before continuing. `npm run build` + smoke before deploy.

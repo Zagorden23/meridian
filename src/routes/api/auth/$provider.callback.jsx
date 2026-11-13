@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { SECURITY_HEADERS, oauthFailureLocation } from "@/lib/meridian/auth-route.js";
 import {
-  clearOAuthCookie, createSession, getSessionUser, oauthRedirectUri, openOAuthState,
-  parseCookies, resolveOAuthAccount, resolveOAuthIdentity,
+  authNoticeCookie, clearOAuthCookie, createSession, getSessionUser, oauthRedirectUri, openOAuthState,
+  parseCookies, publicOrigin, resolveOAuthAccount, resolveOAuthIdentity,
   safeReturnTo, secureContext, touchLogin,
 } from "@/lib/meridian/auth.js";
 
@@ -43,6 +43,7 @@ async function replayAsGet(request) {
 async function complete(request, params) {
   const secure = secureContext(request);
   const cookies = parseCookies(request);
+  const origin = publicOrigin(request);
   const fail = (code, ctx = {}) => {
     const headers = new Headers({
       ...SECURITY_HEADERS,
@@ -50,6 +51,7 @@ async function complete(request, params) {
         providerId: params.provider,
         returnTo: safeReturnTo(ctx.returnTo),
         intent: ctx.intent,
+        mode: ctx.mode ?? null,
       }),
     });
     headers.append("set-cookie", clearOAuthCookie(secure));
@@ -60,8 +62,6 @@ async function complete(request, params) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    // The sealed cookie is opened first so even a cancelled attempt returns
-    // the person to where they were headed.
     let st = null;
     if (cookies.meridian_oauth) {
       try {
@@ -70,7 +70,7 @@ async function complete(request, params) {
         return fail(err?.code ?? "OAUTH_STATE_INVALID");
       }
     }
-    const ctx = st ? { returnTo: st.returnTo, intent: st.intent } : {};
+    const ctx = st ? { returnTo: st.returnTo, intent: st.intent, mode: st.mode ?? null } : {};
     if (url.searchParams.get("error") || !code) return fail("OAUTH_CANCELLED", ctx);
     if (!st) return fail("OAUTH_STATE_INVALID");
     if (st.provider !== params.provider || st.state !== state) return fail("OAUTH_STATE_INVALID", ctx);
@@ -79,10 +79,12 @@ async function complete(request, params) {
       identity = await resolveOAuthIdentity(
         params.provider,
         String(code),
-        // Must match the redirect_uri the authorize request sent, or the provider
-        // rejects the exchange — including when *_CALLBACK_URL overrides it.
-        oauthRedirectUri(params.provider, url.origin),
-        { nonce: st.nonce, appleUser: cookies[APPLE_USER_COOKIE] ?? null },
+        oauthRedirectUri(params.provider, origin),
+        {
+          nonce: st.nonce,
+          codeVerifier: st.codeVerifier ?? null,
+          appleUser: cookies[APPLE_USER_COOKIE] ?? null,
+        },
       );
     } catch (err) {
       return fail(err?.code ?? "OAUTH_FAILED", ctx);
@@ -91,20 +93,22 @@ async function complete(request, params) {
     try {
       const linking = st.intent === "link";
       const sess = linking ? await getSessionUser(request).catch(() => null) : null;
-      const { user } = await resolveOAuthAccount(identity, params.provider, {
+      const { user, created: accountCreated, linked, claimed } = await resolveOAuthAccount(identity, params.provider, {
         sessionUserId: sess?.user?.id ?? null,
         intent: linking ? "link" : "login",
       });
-      // Both intents return to the sealed destination: a link started from
-      // Settings lands back on Settings, a sign-in lands where it began.
       const headers = new Headers({ ...SECURITY_HEADERS, location: safeReturnTo(st.returnTo) });
       if (!linking) {
-        // Linking keeps the session the person already has; only a sign-in
-        // opens a new one.
         await touchLogin(user._id);
-        const created = await createSession(user._id, request, { method: params.provider });
-        headers.append("set-cookie", created.cookie);
+        const session = await createSession(user._id, request, { method: params.provider });
+        headers.append("set-cookie", session.cookie);
       }
+      const notice = linked
+        ? `linked:${params.provider}`
+        : accountCreated || claimed
+          ? `created:${params.provider}`
+          : `signin:${params.provider}`;
+      headers.append("set-cookie", authNoticeCookie(notice, secure));
       headers.append("set-cookie", clearOAuthCookie(secure));
       if (cookies[APPLE_USER_COOKIE]) headers.append("set-cookie", appleUserCookie("", secure, 0));
       return new Response(null, { status: 302, headers });

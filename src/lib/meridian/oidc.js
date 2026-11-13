@@ -17,6 +17,10 @@ import { httpError } from "./api-envelope.js";
 
 const JWKS_TTL_MS = 60 * 60 * 1000; // jose also honours the response Cache-Control
 
+// Microsoft's fixed tenant GUID for personal consumer accounts (Outlook/Hotmail/Live).
+export const CONSUMER_MICROSOFT_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad";
+const GUID_RE = /^[0-9a-fA-F-]{36}$/;
+
 /** Remote key sets are expensive to build — one per issuer for the process. */
 const keySets = new Map();
 
@@ -54,15 +58,16 @@ function microsoftAuthority() {
   return (process.env.MICROSOFT_TENANT_ID || "common").trim();
 }
 
-let microsoftDiscovery = null; // { jwks, exp }
+const microsoftDiscoveryCache = new Map(); // authority -> { jwks, exp }
 
 /**
  * Microsoft rotates the authority per tenant, so its key set comes from the
  * tenant's OpenID discovery document rather than a fixed URL.
  */
 async function microsoftMeta() {
-  if (microsoftDiscovery && microsoftDiscovery.exp > Date.now()) return microsoftDiscovery;
   const authority = microsoftAuthority();
+  const cached = microsoftDiscoveryCache.get(authority);
+  if (cached && cached.exp > Date.now()) return cached;
   const url = `https://login.microsoftonline.com/${encodeURIComponent(authority)}/v2.0/.well-known/openid-configuration`;
   const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) {
@@ -72,17 +77,33 @@ async function microsoftMeta() {
   if (!doc?.jwks_uri) {
     throw httpError(502, "OAUTH_VERIFY_FAILED", "Microsoft sign-in could not be verified.");
   }
-  microsoftDiscovery = { jwks: doc.jwks_uri, exp: Date.now() + JWKS_TTL_MS };
-  return microsoftDiscovery;
+  const entry = { jwks: doc.jwks_uri, exp: Date.now() + JWKS_TTL_MS };
+  microsoftDiscoveryCache.set(authority, entry);
+  return entry;
 }
 
 /**
  * The issuer of a Microsoft token identifies the *account's* tenant, not the
  * authority we queried, so it is validated by shape (`…/<tenant>/v2.0`) instead
- * of equality.
+ * of equality. When MICROSOFT_TENANT_ID is pinned to a specific GUID, enforce
+ * that tenant id as well.
  */
-function microsoftIssuerOk(iss) {
-  return /^https:\/\/login\.microsoftonline\.com\/[0-9a-fA-F-]{36}\/v2\.0$/.test(String(iss ?? ""));
+function microsoftIssuerOk(iss, claims) {
+  const m = /^https:\/\/login\.microsoftonline\.com\/([0-9a-fA-F-]{36})\/v2\.0$/.exec(String(iss ?? ""));
+  if (!m) return false;
+  const authority = microsoftAuthority();
+  if (GUID_RE.test(authority)) {
+    const expected = authority.toLowerCase();
+    if (m[1].toLowerCase() !== expected) return false;
+    if (claims?.tid && String(claims.tid).toLowerCase() !== expected) return false;
+  }
+  if (authority === "consumers" && m[1].toLowerCase() !== CONSUMER_MICROSOFT_TENANT) {
+    return false;
+  }
+  if (authority === "organizations" && m[1].toLowerCase() === CONSUMER_MICROSOFT_TENANT) {
+    return false;
+  }
+  return true;
 }
 
 function verifyFailed(label = "This provider") {
@@ -128,7 +149,7 @@ export async function verifyIdToken(providerId, idToken, { nonce } = {}) {
       console.error(`[oidc] microsoft id_token rejected:`, err?.code ?? err?.message);
       throw verifyFailed("Microsoft");
     }
-    if (!microsoftIssuerOk(claims.iss)) {
+    if (!microsoftIssuerOk(claims.iss, claims)) {
       console.error("[oidc] microsoft id_token issuer mismatch:", claims.iss);
       throw verifyFailed("Microsoft");
     }
@@ -146,7 +167,12 @@ export async function verifyIdToken(providerId, idToken, { nonce } = {}) {
   return claims;
 }
 
-/** `email_verified` arrives as a boolean from Apple and a boolean from Google. */
+/** `email_verified` arrives as a boolean or `"true"` string across OIDC providers. */
 export function claimIsTrue(value) {
   return value === true || value === "true";
+}
+
+export function looksLikeEmail(value) {
+  const s = String(value ?? "").trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) && s.length <= 254;
 }

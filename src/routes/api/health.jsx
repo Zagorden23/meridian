@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { apiRoute } from "@/lib/meridian/api-route.js";
-import { dbSource } from "@/lib/db.js";
+import { mongoStatus } from "@/lib/meridian/mongo.js";
 
 export const Route = createFileRoute("/api/health")({
   server: {
@@ -9,7 +9,8 @@ export const Route = createFileRoute("/api/health")({
         data: {
           status: "ok",
           service: "meridian-api",
-          db: dbSource,
+          db: "mongodb",
+          mongo: mongoStatus(),
           version: "meridian/0.1.0",
           time: new Date().toISOString(),
         },

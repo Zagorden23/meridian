@@ -70,7 +70,7 @@ export function interpolateGreatCircle(aLat, aLon, bLat, bLon, t) {
   };
 }
 
-// Bounding box (degrees) containing a radius around a point — for SQL prefilter.
+// Bounding box (degrees) containing a radius around a point — for spatial queries.
 export function boundingBox(lat, lon, radiusKm) {
   const rad = radiusKm / EARTH_RADIUS_KM;
   const dLat = toDeg(rad);

@@ -37,11 +37,14 @@ const MESSAGES = {
   ACCOUNT_DISABLED: "This account is disabled.",
   SESSION_REQUIRED: "Your session has ended. Please sign in again.",
   EMAIL_TAKEN: "An account with this email already exists. Sign in instead.",
+  PHONE_TAKEN: "Another Meridian account already uses this phone number.",
   EMAIL_REQUIRED: "Add an email sign-in to this account before setting a password.",
+  EMAIL_VERIFICATION_REQUIRED: "Confirm your email address with the 6-digit code sent to your inbox.",
   // Password
   INVALID_CREDENTIALS: "Incorrect email or password.",
   WEAK_PASSWORD: "Use a password with at least 8 characters.",
   PASSWORD_REQUIRED: "Enter your password.",
+  PASSWORD_MISMATCH: "Passwords do not match.",
   CURRENT_PASSWORD_REQUIRED: "Enter your current password.",
   // One-time codes
   OTP_INVALID: "Incorrect code.",

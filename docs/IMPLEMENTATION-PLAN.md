@@ -2,7 +2,7 @@
 
 > Written after the Phase 0 audit of the working project. Nothing here replaces
 > the architecture documented in `ARCHITECTURE.md`; every change is additive and
-> preserves the running globe, the PGLite/Neon geo layer, and the honest
+> preserves the running globe, the MongoDB geo/auth layer, and the honest
 > "unconfigured provider" behavior.
 
 ## 0. Audit summary (what already exists)
@@ -102,15 +102,7 @@ same-origin paths and is applied on the way in (`?returnTo=`), on the way out
 both the authorize request and the code exchange, so a `*_CALLBACK_URL`
 override can never desync the two.
 
-### Known issue — pre-existing, unrelated to this pass
+### Persistence note
 
-The embedded **PGLite** fallback cannot run from the bundled server output: the
-Emscripten assets (`pglite.data`, `pglite.wasm`) are not copied into
-`.output/server/_libs/`, so the bundled module resolves `pglite.data` beside
-itself and throws `ENOENT` — every geo endpoint 500s when `DATABASE_URL` is
-unset. Dev is unaffected (assets resolve from `node_modules`), and a deployment
-that sets `DATABASE_URL` never loads PGLite, which is why production is not
-blocked by it. The fix is a Nitro build-config change (emit the PGLite assets,
-or externalise `@electric-sql/pglite`), so it was deliberately left out of this
-auth/UI/navigation pass. `src/lib/db.js` and the geo routes are untouched by
-this work.
+All persistence across geo catalog, weather snapshots, flight caches, accounts,
+OTP challenges, sessions, and saved places uses MongoDB via Mongoose (`MONGODB_URI`).

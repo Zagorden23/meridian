@@ -23,6 +23,9 @@ export function sendError(err, cookies = []) {
   const status = err?.status ?? 500;
   if (status >= 500) console.error(`[auth] ${rid} ${code}:`, err?.message ?? err);
   const { body } = fail(code, status >= 500 ? "Authentication is temporarily unavailable." : (err?.message ?? "Request failed"), status, rid);
+  if (status < 500 && err?.details && typeof err.details === "object") {
+    body.error.details = err.details;
+  }
   const headers = new Headers({ "content-type": "application/json", ...SECURITY_HEADERS });
   for (const c of cookies) headers.append("set-cookie", c);
   return new Response(JSON.stringify(body), { status, headers });

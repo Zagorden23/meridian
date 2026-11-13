@@ -1,36 +1,44 @@
 #!/usr/bin/env node
-// MERIDIAN geodata updater: re-runs the idempotent pipeline (curated seed,
-// optional GeoNames refresh) and expires stale weather cache rows. Safe for
-// cron: never deletes catalog data, only expired cache entries.
-//
+// Re-syncs curated catalog and purges expired weather & flight caches in MongoDB.
 // Usage:
-//   DATABASE_URL=... node scripts/update-geodata.js [--geonames <path>]
-//   npm run db:update-geodata
-import { createRequire } from "node:module";
+//   MONGODB_URI=... node scripts/update-geodata.js [--geonames <path>]
 
-createRequire(import.meta.url);
-const args = process.argv.slice(2);
-const gi = args.indexOf("--geonames");
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  FlightPosition,
+  WeatherSnapshot,
+  disconnectMongo,
+  mongoConfigured,
+  requireMongoConnection,
+} from "../src/lib/meridian/mongo.js";
+import { SEED_SOURCE } from "../src/lib/meridian/seed-data.js";
+import { logIngestion, seedCurated } from "../src/lib/meridian/seed.js";
 
-if (!process.env.DATABASE_URL) {
-  console.log("[update-geodata] DATABASE_URL not set — nothing to update (dev uses in-app seed).");
+if (!mongoConfigured()) {
+  console.log("[update-geodata] MONGODB_URI not set — nothing to update.");
   process.exit(0);
 }
 
-const { spawnSync } = await import("node:child_process");
-const importArgs = ["scripts/import-geodata.js"];
-if (gi >= 0 && args[gi + 1]) importArgs.push("--geonames", args[gi + 1]);
-const r = spawnSync(process.execPath, importArgs, { stdio: "inherit", env: process.env });
-if (r.status !== 0) process.exit(r.status ?? 1);
-
-const { default: pg } = await import("pg");
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
-try {
-  const res = await pool.query("DELETE FROM weather_cache WHERE expires_at <= now()");
-  console.log(`[update-geodata] expired weather rows removed: ${res.rowCount}`);
-  const res2 = await pool.query("DELETE FROM flight_positions WHERE expires_at <= now()");
-  console.log(`[update-geodata] expired flight-position rows removed: ${res2.rowCount}`);
-} finally {
-  await pool.end();
+const args = process.argv.slice(2);
+const dir = dirname(fileURLToPath(import.meta.url));
+if (args.includes("--geonames")) {
+  const res = spawnSync(process.execPath, [join(dir, "import-geodata.js"), ...args], {
+    stdio: "inherit",
+  });
+  process.exit(res.status ?? 0);
 }
-console.log("[update-geodata] done.");
+
+await requireMongoConnection();
+const counts = await seedCurated();
+const total = Object.values(counts).reduce((a, b) => a + b, 0);
+await logIngestion("update-curated", SEED_SOURCE, total);
+
+const now = new Date();
+await Promise.all([
+  WeatherSnapshot().deleteMany({ expiresAt: { $lte: now } }),
+  FlightPosition().deleteMany({ expiresAt: { $lte: now } }),
+]);
+await disconnectMongo();
+console.log("[update-geodata] refreshed:", counts);

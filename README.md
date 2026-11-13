@@ -16,7 +16,7 @@ React + JSX (TanStack Start, single service)
         ↓  same-origin /api/* (no frontend API keys)
 Node server functions (JS only)
         ↓
-MongoDB Atlas via Mongoose (primary) · embedded PGLite/Postgres (local fallback)
+MongoDB via Mongoose (exclusive primary store for geo catalog, weather cache, accounts, OTPs, sessions, saved places)
         ↓
 External providers (server-side only — secrets never reach the browser)
 ```
@@ -116,7 +116,7 @@ indexes automatically. Collections are created lazily — no migration step.
 
 ```bash
 npm run dev      # dev server (0.0.0.0:8080)
-npm run build    # production build + DB migrate
+npm run build    # production build (Vite + Nitro)
 npm start        # serve production build (Render / any Node host)
 npm run lint     # eslint
 npm test         # node:test suites (auth, geo-math, flights, timezone, …)
@@ -124,12 +124,12 @@ npm test         # node:test suites (auth, geo-math, flights, timezone, …)
 
 ## Deployment (Render)
 
-`render.yaml` defines one web service (`npm install && npm run build` →
-`npm start`, health check `/api/health`) plus a Postgres fallback and a
-nightly geodata cron. Set `MONGODB_URI`, `SESSION_SECRET` and any provider
-keys in the Render dashboard. The backend listens on `process.env.PORT`;
-the frontend calls same-origin `/api/*`, so no production URL juggling and
-no CORS wildcard (authenticated APIs never use `origin: "*"`).
+`render.yaml` defines one web service (`npm ci --include=dev && npm run build` →
+`npm start`, health check `/api/health`) backed by MongoDB. Set `MONGODB_URI`,
+`SESSION_SECRET` and any provider keys in the Render dashboard. The backend
+listens on `process.env.PORT`; the frontend calls same-origin `/api/*`, so no
+production URL juggling and no CORS wildcard (authenticated APIs never use
+`origin: "*"`).
 
 ## Security notes
 

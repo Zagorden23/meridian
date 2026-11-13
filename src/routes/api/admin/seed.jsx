@@ -1,28 +1,31 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { httpError } from "@/lib/meridian/api-envelope.js";
 import { apiRoute } from "@/lib/meridian/api-route.js";
-import { dbSource, getSql } from "@/lib/db.js";
+import { SEED_SOURCE } from "@/lib/meridian/seed-data.js";
 import { logIngestion, seedCurated } from "@/lib/meridian/seed.js";
 
 export const Route = createFileRoute("/api/admin/seed")({
   server: {
-    handlers: apiRoute(
-      {
-        // Local/PGLite seeding without a token; everywhere else requires
-        // MERIDIAN_SEED_TOKEN so production data can't be rewritten by visitors.
-        POST: async ({ request }) => {
-          const expected = process.env.MERIDIAN_SEED_TOKEN;
-          const provided = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
-          if (dbSource !== "pglite" && (!expected || provided !== expected)) {
-            throw Object.assign(new Error("Seeding is not allowed here."), { status: 403, code: "FORBIDDEN" });
+    // Allows unauthenticated seeding in local development when MERIDIAN_SEED_TOKEN is unset;
+    // production / Render deployments require MERIDIAN_SEED_TOKEN bearer auth.
+    handlers: apiRoute({
+      POST: async ({ request }) => {
+        const expected = process.env.MERIDIAN_SEED_TOKEN?.trim();
+        const isProd = process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+        const authHeader = request.headers.get("authorization") || "";
+        const provided = authHeader.replace(/^Bearer\s+/i, "").trim();
+
+        if (isProd || expected) {
+          if (!expected || provided !== expected) {
+            throw httpError(401, "UNAUTHORIZED", "Valid seed token required.");
           }
-          const sql = await getSql();
-          const counts = await seedCurated(sql.query);
-          const total = Object.values(counts).reduce((a, b) => a + b, 0);
-          await logIngestion(sql.query, "meridian-curated", "admin/seed", total);
-          return { data: { counts, total }, source: "meridian-geo" };
-        },
+        }
+
+        const counts = await seedCurated();
+        const total = Object.values(counts).reduce((a, b) => a + b, 0);
+        await logIngestion("curated", SEED_SOURCE, total);
+        return { data: { seeded: counts }, source: "meridian-seed" };
       },
-      { limit: 5, windowMs: 60_000 },
-    ),
+    }),
   },
 });

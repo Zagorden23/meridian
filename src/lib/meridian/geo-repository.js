@@ -1,233 +1,637 @@
-// GeoRepository — the ONLY module that issues geo SQL. Components, AI tools
-// and API routes go through here, so a future PostGIS move touches one file.
-// Portable SQL (bbox prefilter); haversine refinement happens in JS.
-import { getSql } from "@/lib/db.js";
-import { boundingBox, distanceKm, normalizeName } from "./geo-math.js";
+// GeoRepository — single persistence seam over the geographic catalog
+// (countries, states, cities, airports, airlines, POIs) backed purely by MongoDB.
+
+import { normalizeName } from "./geo-math.js";
+import {
+  Airline,
+  Airport,
+  City,
+  Country,
+  Poi,
+  State,
+  requireMongoConnection,
+} from "./mongo.js";
 import { seedCurated } from "./seed.js";
 
-const globalRef = globalThis;
+const globalForSeed = globalThis;
 
-async function sql() {
-  const db = await getSql();
-  // Auto-seed curated catalog once when empty (covers both in-memory PGLite
-  // and freshly provisioned Postgres instances).
-  globalRef.__meridianCatalogSeeded__ ??= (async () => {
-    const rows = await db.query("SELECT 1 FROM countries LIMIT 1");
-    if (!rows.length) {
-      await seedCurated(db.query);
-    }
-  })().catch((err) => {
-    globalRef.__meridianCatalogSeeded__ = undefined;
-    throw err;
-  });
-  await globalRef.__meridianCatalogSeeded__;
-  return db;
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// --- Countries -------------------------------------------------------------
+function clampLat(lat) {
+  return Math.max(-90, Math.min(90, Number(lat)));
+}
+
+function wrapLon(lon) {
+  const n = Number(lon);
+  if (!Number.isFinite(n)) return 0;
+  return ((((n + 180) % 360) + 360) % 360) - 180;
+}
+
+function cleanDoc(doc) {
+  if (!doc) return null;
+  const { _id, __v, location: _location, _distanceMeters, ...rest } = doc;
+  if (typeof _distanceMeters === "number") {
+    rest.distanceKm = Math.round((_distanceMeters / 1000) * 100) / 100;
+  }
+  return rest;
+}
+
+async function ensureSeeded() {
+  await requireMongoConnection();
+  const [countriesCount, citiesCount] = await Promise.all([
+    Country().estimatedDocumentCount(),
+    City().estimatedDocumentCount(),
+  ]);
+  if (countriesCount > 0 && citiesCount > 0) return;
+
+  if (!globalForSeed.__meridianGeoSeedPromise__) {
+    globalForSeed.__meridianGeoSeedPromise__ = seedCurated()
+      .catch((err) => {
+        globalForSeed.__meridianGeoSeedPromise__ = null;
+        throw err;
+      })
+      .finally(() => {
+        globalForSeed.__meridianGeoSeedPromise__ = null;
+      });
+  }
+  await globalForSeed.__meridianGeoSeedPromise__;
+}
+
+async function getCountryNameMap() {
+  const rows = await Country().find({}, { _id: 0, id: 1, name: 1, iso2: 1 }).lean();
+  const map = new Map();
+  for (const r of rows) {
+    map.set(r.id, { name: r.name, iso2: r.iso2 ?? null });
+  }
+  return map;
+}
+
 export async function listCountries() {
-  const db = await sql();
-  return db.query("SELECT * FROM countries ORDER BY name ASC");
+  await ensureSeeded();
+  const rows = await Country()
+    .find(
+      {},
+      {
+        _id: 0,
+        id: 1,
+        name: 1,
+        officialName: 1,
+        iso2: 1,
+        iso3: 1,
+        continent: 1,
+        capitalCityId: 1,
+        latitude: 1,
+        longitude: 1,
+        timezone: 1,
+        currency: 1,
+        languages: 1,
+        flag: 1,
+      },
+    )
+    .sort({ name: 1 })
+    .lean();
+  return rows.map(cleanDoc);
 }
 
 export async function getCountry(idOrIso) {
-  const db = await sql();
-  const key = String(idOrIso ?? "").toUpperCase();
-  const rows = await db.query(
-    "SELECT * FROM countries WHERE id = $1 OR iso2 = $1 OR iso3 = $1 LIMIT 1",
-    [idOrIso],
-  );
-  if (rows.length) return rows[0];
-  const rows2 = await db.query("SELECT * FROM countries WHERE iso2 = $1 LIMIT 1", [key]);
-  return rows2[0] ?? null;
+  await ensureSeeded();
+  const raw = String(idOrIso || "").trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  const lower = raw.toLowerCase();
+  const doc = await Country()
+    .findOne({ $or: [{ id: lower }, { id: raw }, { iso2: upper }, { iso3: upper }] })
+    .lean();
+  return cleanDoc(doc);
 }
 
 export async function getCountryStates(countryId) {
-  const db = await sql();
-  return db.query("SELECT * FROM states WHERE country_id = $1 ORDER BY name ASC", [countryId]);
+  await ensureSeeded();
+  const rows = await State()
+    .find(
+      { countryId: String(countryId || "").trim() },
+      { _id: 0, id: 1, countryId: 1, name: 1, code: 1, latitude: 1, longitude: 1 },
+    )
+    .sort({ name: 1 })
+    .lean();
+  return rows.map(cleanDoc);
 }
 
 export async function getCountryCities(countryId, limit = 50) {
-  const db = await sql();
-  return db.query(
-    "SELECT * FROM cities WHERE country_id = $1 ORDER BY population DESC NULLS LAST, name ASC LIMIT $2",
-    [countryId, limit],
-  );
+  await ensureSeeded();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+  const rows = await City()
+    .find(
+      { countryId: String(countryId || "").trim() },
+      {
+        _id: 0,
+        id: 1,
+        name: 1,
+        countryId: 1,
+        countryCode: 1,
+        stateId: 1,
+        latitude: 1,
+        longitude: 1,
+        elevation: 1,
+        timezone: 1,
+        population: 1,
+        isCapital: 1,
+      },
+    )
+    .sort({ population: -1, name: 1 })
+    .limit(safeLimit)
+    .lean();
+  return rows.map(cleanDoc);
 }
 
-// --- Search (ranked: exact → normalized → capital → population) -------------
+function searchRank(base, nameNorm, norm, exactBonus = 0) {
+  let score = base;
+  if (nameNorm === norm) score += 60;
+  else if (nameNorm.startsWith(norm)) score += 35;
+  return score + exactBonus;
+}
+
 export async function searchCatalog(query, { limit = 12 } = {}) {
-  const db = await sql();
+  await ensureSeeded();
   const q = String(query ?? "").trim();
   if (!q) return [];
+
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 12, 50));
   const norm = normalizeName(q);
-  const like = `%${norm}%`;
-  const cities = await db.query(
-    `SELECT id, name, country_id AS "countryId", state_id AS "stateId", latitude, longitude,
-            population, is_capital AS "isCapital", timezone,
-            CASE WHEN normalized_name = $1 THEN 0
-                 WHEN normalized_name LIKE $2 THEN 1 ELSE 2 END AS rank
-       FROM cities WHERE normalized_name = $1 OR normalized_name LIKE $2
-       ORDER BY rank ASC, "isCapital" DESC, population DESC NULLS LAST LIMIT $3`,
-    [norm, like, limit],
-  );
-  const countries = await db.query(
-    "SELECT id, name, iso2, latitude, longitude FROM countries WHERE LOWER(name) LIKE $1 ORDER BY name ASC LIMIT 4",
-    [`%${q.toLowerCase()}%`],
-  );
-  const airports = await db.query(
-    `SELECT id, iata, icao, name, city_id AS "cityId", country_id AS "countryId",
-            latitude, longitude, type
-       FROM airports WHERE UPPER(iata) = $1 OR UPPER(icao) = $1 OR LOWER(name) LIKE $2 LIMIT 4`,
-    [q.toUpperCase(), `%${q.toLowerCase()}%`],
-  );
-  const results = [
-    ...countries.map((c) => ({ kind: "COUNTRY", ...c })),
-    ...cities.map((c) => ({ kind: "CITY", ...c })),
-    ...airports.map((a) => ({ kind: "AIRPORT", ...a })),
-  ];
-  return results.slice(0, limit);
+  const normRx = new RegExp(escapeRegex(norm), "i");
+  const normPrefixRx = new RegExp(`^${escapeRegex(norm)}`);
+  const rawRx = new RegExp(escapeRegex(q), "i");
+  const upperPrefixRx = new RegExp(`^${escapeRegex(q.toUpperCase())}`);
+  const upperExact = q.toUpperCase();
+
+  const [countryMap, cityDocs, countryDocs, airportDocs, poiDocs] = await Promise.all([
+    getCountryNameMap(),
+    City()
+      .find(
+        {
+          $or: [
+            { normalizedName: normPrefixRx },
+            { normalizedName: normRx },
+            { name: rawRx },
+          ],
+        },
+        {
+          _id: 0,
+          id: 1,
+          name: 1,
+          normalizedName: 1,
+          countryId: 1,
+          countryCode: 1,
+          stateId: 1,
+          latitude: 1,
+          longitude: 1,
+          timezone: 1,
+          population: 1,
+          isCapital: 1,
+        },
+      )
+      .sort({ isCapital: -1, population: -1 })
+      .limit(safeLimit * 2)
+      .lean(),
+    Country()
+      .find(
+        {
+          $or: [
+            { name: rawRx },
+            { officialName: rawRx },
+            { iso2: upperExact },
+            { iso3: upperExact },
+          ],
+        },
+        {
+          _id: 0,
+          id: 1,
+          name: 1,
+          officialName: 1,
+          iso2: 1,
+          iso3: 1,
+          continent: 1,
+          capitalCityId: 1,
+          flag: 1,
+        },
+      )
+      .sort({ name: 1 })
+      .limit(Math.min(safeLimit, 6))
+      .lean(),
+    Airport()
+      .find(
+        {
+          $or: [
+            { iata: upperExact },
+            { icao: upperExact },
+            { iata: upperPrefixRx },
+            { name: rawRx },
+          ],
+        },
+        {
+          _id: 0,
+          id: 1,
+          iata: 1,
+          icao: 1,
+          name: 1,
+          cityId: 1,
+          countryId: 1,
+          latitude: 1,
+          longitude: 1,
+          timezone: 1,
+          type: 1,
+        },
+      )
+      .sort({ iata: 1, name: 1 })
+      .limit(Math.min(safeLimit, 8))
+      .lean(),
+    Poi()
+      .find(
+        {
+          $or: [
+            { normalizedName: normRx },
+            { name: rawRx },
+            { category: rawRx },
+          ],
+        },
+        {
+          _id: 0,
+          id: 1,
+          name: 1,
+          category: 1,
+          designation: 1,
+          cityId: 1,
+          countryId: 1,
+          latitude: 1,
+          longitude: 1,
+        },
+      )
+      .sort({ name: 1 })
+      .limit(Math.min(safeLimit, 6))
+      .lean(),
+  ]);
+
+  const ranked = [];
+
+  for (const c of cityDocs) {
+    const meta = countryMap.get(c.countryId);
+    const cleaned = cleanDoc(c);
+    const cityNorm = cleaned.normalizedName || normalizeName(cleaned.name);
+    delete cleaned.normalizedName;
+    const bonus = (c.isCapital ? 10 : 0) + Math.min(8, Math.log10((c.population || 0) + 1));
+    ranked.push({
+      _score: searchRank(45, cityNorm, norm, bonus),
+      kind: "CITY",
+      ...cleaned,
+      countryName: meta?.name ?? null,
+      iso2: meta?.iso2 ?? c.countryCode ?? null,
+    });
+  }
+
+  for (const a of airportDocs) {
+    const cleaned = cleanDoc(a);
+    const iataExact = a.iata === upperExact || a.icao === upperExact ? 75 : a.iata?.startsWith(upperExact) ? 35 : 0;
+    ranked.push({
+      _score: searchRank(35, normalizeName(a.name), norm, iataExact),
+      kind: "AIRPORT",
+      ...cleaned,
+      countryName: countryMap.get(a.countryId)?.name ?? null,
+    });
+  }
+
+  for (const co of countryDocs) {
+    const cleaned = cleanDoc(co);
+    const codeExact = co.iso2 === upperExact || co.iso3 === upperExact ? 65 : 0;
+    ranked.push({
+      _score: searchRank(40, normalizeName(co.name), norm, codeExact),
+      kind: "COUNTRY",
+      ...cleaned,
+      countryName: co.continent ?? null,
+    });
+  }
+
+  for (const p of poiDocs) {
+    const cleaned = cleanDoc(p);
+    ranked.push({
+      _score: searchRank(30, normalizeName(p.name), norm),
+      kind: "POI",
+      ...cleaned,
+      countryName: countryMap.get(p.countryId)?.name ?? null,
+    });
+  }
+
+  ranked.sort((a, b) => b._score - a._score || String(a.name).localeCompare(String(b.name)));
+  return ranked.slice(0, safeLimit).map(({ _score, ...hit }) => hit);
 }
 
 export async function getCity(id) {
-  const db = await sql();
-  const rows = await db.query("SELECT * FROM cities WHERE id = $1 LIMIT 1", [id]);
-  return rows[0] ?? null;
+  await ensureSeeded();
+  const doc = await City().findOne({ id: String(id || "").trim() }).lean();
+  if (!doc) return null;
+  const country = await Country().findOne({ id: doc.countryId }, { _id: 0, name: 1, iso2: 1 }).lean();
+  return {
+    ...cleanDoc(doc),
+    countryName: country?.name ?? null,
+    iso2: country?.iso2 ?? doc.countryCode ?? null,
+  };
 }
 
-// --- Viewport / nearby (bbox SQL prefilter + haversine refine) --------------
-export async function citiesInViewport(minLat, maxLat, minLon, maxLon, { limit = 200, minPopulation = 0 } = {}) {
-  const db = await sql();
-  return db.query(
-    `SELECT id, name, country_id AS "countryId", latitude, longitude, population,
-            is_capital AS "isCapital"
-       FROM cities
-       WHERE latitude BETWEEN $1 AND $2 AND longitude BETWEEN $3 AND $4
-         AND population >= $5
-       ORDER BY population DESC NULLS LAST LIMIT $6`,
-    [minLat, maxLat, minLon, maxLon, minPopulation, limit],
-  );
+export async function citiesInViewport(
+  minLat,
+  maxLat,
+  minLon,
+  maxLon,
+  { limit = 200, minPopulation = 0 } = {},
+) {
+  await ensureSeeded();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+  const loLat = clampLat(Math.min(minLat, maxLat));
+  const hiLat = clampLat(Math.max(minLat, maxLat));
+
+  const lonFilter =
+    minLon <= maxLon
+      ? { longitude: { $gte: minLon, $lte: maxLon } }
+      : { $or: [{ longitude: { $gte: minLon } }, { longitude: { $lte: maxLon } }] };
+
+  const rows = await City()
+    .find(
+      {
+        latitude: { $gte: loLat, $lte: hiLat },
+        ...lonFilter,
+        population: { $gte: Number(minPopulation) || 0 },
+      },
+      {
+        _id: 0,
+        id: 1,
+        name: 1,
+        countryId: 1,
+        countryCode: 1,
+        latitude: 1,
+        longitude: 1,
+        population: 1,
+        isCapital: 1,
+        timezone: 1,
+      },
+    )
+    .sort({ population: -1 })
+    .limit(safeLimit)
+    .lean();
+
+  return rows.map(cleanDoc);
 }
 
 export async function nearby(lat, lon, radiusKm = 100, { limit = 12 } = {}) {
-  const db = await sql();
-  const box = boundingBox(lat, lon, radiusKm);
-  const rows = await db.query(
-    `SELECT id, name, country_id AS "countryId", latitude, longitude, population,
-            is_capital AS "isCapital", 'CITY' AS kind
-       FROM cities WHERE latitude BETWEEN $1 AND $2 AND longitude BETWEEN $3 AND $4 LIMIT 200`,
-    [box.minLat, box.maxLat, box.minLon, box.maxLon],
-  );
-  return rows
-    .map((r) => ({ ...r, distanceKm: distanceKm(lat, lon, r.latitude, r.longitude) }))
-    .filter((r) => r.distanceKm <= radiusKm)
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, limit);
+  await ensureSeeded();
+  const safeLat = clampLat(lat);
+  const safeLon = wrapLon(lon);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 12, 50));
+  const maxMeters = Math.max(1, Number(radiusKm) || 100) * 1000;
+
+  const docs = await City().aggregate([
+    {
+      $geoNear: {
+        near: { type: "Point", coordinates: [safeLon, safeLat] },
+        distanceField: "_distanceMeters",
+        maxDistance: maxMeters,
+        spherical: true,
+      },
+    },
+    { $limit: safeLimit },
+    {
+      $project: {
+        _id: 0,
+        id: 1,
+        name: 1,
+        countryId: 1,
+        countryCode: 1,
+        latitude: 1,
+        longitude: 1,
+        population: 1,
+        isCapital: 1,
+        timezone: 1,
+        _distanceMeters: 1,
+      },
+    },
+  ]);
+
+  return docs.map(cleanDoc);
 }
 
-// --- Airports / airlines ----------------------------------------------------
 export async function listAirports({ countryId, cityId, limit = 100 } = {}) {
-  const db = await sql();
-  const conds = [];
-  const params = [];
-  if (countryId) {
-    params.push(countryId);
-    conds.push(`country_id = $${params.length}`);
-  }
-  if (cityId) {
-    params.push(cityId);
-    conds.push(`city_id = $${params.length}`);
-  }
-  params.push(limit);
-  return db.query(
-    `SELECT * FROM airports ${conds.length ? `WHERE ${conds.join(" AND ")}` : ""} ORDER BY name ASC LIMIT $${params.length}`,
-    params,
-  );
+  await ensureSeeded();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 300));
+  const filter = {};
+  if (countryId) filter.countryId = String(countryId).trim();
+  if (cityId) filter.cityId = String(cityId).trim();
+
+  const rows = await Airport()
+    .find(filter, {
+      _id: 0,
+      id: 1,
+      iata: 1,
+      icao: 1,
+      name: 1,
+      cityId: 1,
+      countryId: 1,
+      latitude: 1,
+      longitude: 1,
+      elevation: 1,
+      timezone: 1,
+      type: 1,
+    })
+    .sort({ name: 1 })
+    .limit(safeLimit)
+    .lean();
+
+  return rows.map(cleanDoc);
 }
 
 export async function getAirport(idOrCode) {
-  const db = await sql();
-  const code = String(idOrCode ?? "").toUpperCase();
-  const rows = await db.query(
-    "SELECT * FROM airports WHERE id = $1 OR iata = $2 OR icao = $2 LIMIT 1",
-    [idOrCode, code],
-  );
-  return rows[0] ?? null;
+  await ensureSeeded();
+  const raw = String(idOrCode || "").trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  const lower = raw.toLowerCase();
+  const doc = await Airport()
+    .findOne({ $or: [{ id: lower }, { id: raw }, { iata: upper }, { icao: upper }] })
+    .lean();
+  return cleanDoc(doc);
 }
 
 export async function nearestAirport(lat, lon) {
-  const db = await sql();
-  const box = boundingBox(lat, lon, 500);
-  const rows = await db.query(
-    "SELECT * FROM airports WHERE latitude BETWEEN $1 AND $2 AND longitude BETWEEN $3 AND $4 LIMIT 200",
-    [box.minLat, box.maxLat, box.minLon, box.maxLon],
-  );
-  let best = null;
-  for (const r of rows) {
-    const d = distanceKm(lat, lon, r.latitude, r.longitude);
-    if (!best || d < best.distanceKm) best = { ...r, distanceKm: d };
-  }
-  return best;
+  await ensureSeeded();
+  const safeLat = clampLat(lat);
+  const safeLon = wrapLon(lon);
+  const docs = await Airport().aggregate([
+    {
+      $geoNear: {
+        near: { type: "Point", coordinates: [safeLon, safeLat] },
+        distanceField: "_distanceMeters",
+        spherical: true,
+      },
+    },
+    { $limit: 1 },
+    {
+      $project: {
+        _id: 0,
+        id: 1,
+        iata: 1,
+        icao: 1,
+        name: 1,
+        cityId: 1,
+        countryId: 1,
+        latitude: 1,
+        longitude: 1,
+        timezone: 1,
+        type: 1,
+        _distanceMeters: 1,
+      },
+    },
+  ]);
+
+  return docs.length ? cleanDoc(docs[0]) : null;
 }
 
 export async function listAirlines({ countryId, limit = 100 } = {}) {
-  const db = await sql();
-  if (countryId) {
-    return db.query("SELECT * FROM airlines WHERE country_id = $1 ORDER BY name ASC LIMIT $2", [
-      countryId,
-      limit,
-    ]);
-  }
-  return db.query("SELECT * FROM airlines ORDER BY name ASC LIMIT $1", [limit]);
+  await ensureSeeded();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 300));
+  const filter = { active: true };
+  if (countryId) filter.countryId = String(countryId).trim();
+
+  const rows = await Airline()
+    .find(filter, {
+      _id: 0,
+      id: 1,
+      name: 1,
+      iataCode: 1,
+      icaoCode: 1,
+      countryId: 1,
+      type: 1,
+      active: 1,
+    })
+    .sort({ name: 1 })
+    .limit(safeLimit)
+    .lean();
+
+  return rows.map(cleanDoc);
 }
 
 export async function getAirline(idOrCode) {
-  const db = await sql();
-  const code = String(idOrCode ?? "").toUpperCase();
-  const rows = await db.query(
-    "SELECT * FROM airlines WHERE id = $1 OR iata_code = $2 OR icao_code = $2 LIMIT 1",
-    [idOrCode, code],
-  );
-  return rows[0] ?? null;
+  await ensureSeeded();
+  const raw = String(idOrCode || "").trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  const lower = raw.toLowerCase();
+  const doc = await Airline()
+    .findOne({
+      $or: [
+        { id: lower },
+        { id: raw },
+        { iataCode: upper },
+        { icaoCode: upper },
+      ],
+    })
+    .lean();
+  return cleanDoc(doc);
 }
 
-// --- Capitals / POIs ---------------------------------------------------------
 export async function listCapitals() {
-  const db = await sql();
-  return db.query(
-    "SELECT * FROM cities WHERE is_capital = TRUE ORDER BY population DESC NULLS LAST, name ASC",
-  );
+  await ensureSeeded();
+  const [countryMap, rows] = await Promise.all([
+    getCountryNameMap(),
+    City()
+      .find(
+        { isCapital: true },
+        {
+          _id: 0,
+          id: 1,
+          name: 1,
+          countryId: 1,
+          countryCode: 1,
+          latitude: 1,
+          longitude: 1,
+          timezone: 1,
+          population: 1,
+        },
+      )
+      .sort({ population: -1, name: 1 })
+      .lean(),
+  ]);
+
+  return rows.map((r) => {
+    const meta = countryMap.get(r.countryId);
+    return {
+      ...cleanDoc(r),
+      countryName: meta?.name ?? null,
+      iso2: meta?.iso2 ?? r.countryCode ?? null,
+    };
+  });
 }
 
 export async function poisNearby(lat, lon, radiusKm = 25, { category, limit = 20 } = {}) {
-  const db = await sql();
-  const box = boundingBox(lat, lon, radiusKm);
-  const params = [box.minLat, box.maxLat, box.minLon, box.maxLon];
-  let extra = "";
-  if (category) {
-    params.push(category);
-    extra = `AND category = $${params.length}`;
-  }
-  params.push(300);
-  const rows = await db.query(
-    `SELECT * FROM pois WHERE latitude BETWEEN $1 AND $2 AND longitude BETWEEN $3 AND $4 ${extra} LIMIT $${params.length}`,
-    params,
-  );
-  return rows
-    .map((r) => ({ ...r, distanceKm: distanceKm(lat, lon, r.latitude, r.longitude) }))
-    .filter((r) => r.distanceKm <= radiusKm)
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, limit);
+  await ensureSeeded();
+  const safeLat = clampLat(lat);
+  const safeLon = wrapLon(lon);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+  const maxMeters = Math.max(1, Number(radiusKm) || 25) * 1000;
+
+  const geoStage = {
+    $geoNear: {
+      near: { type: "Point", coordinates: [safeLon, safeLat] },
+      distanceField: "_distanceMeters",
+      maxDistance: maxMeters,
+      spherical: true,
+      ...(category ? { query: { category: String(category).trim() } } : {}),
+    },
+  };
+
+  const docs = await Poi().aggregate([
+    geoStage,
+    { $limit: safeLimit },
+    {
+      $project: {
+        _id: 0,
+        id: 1,
+        name: 1,
+        category: 1,
+        designation: 1,
+        cityId: 1,
+        countryId: 1,
+        latitude: 1,
+        longitude: 1,
+        _distanceMeters: 1,
+      },
+    },
+  ]);
+
+  return docs.map(cleanDoc);
 }
 
-// --- Reverse geocode (nearest city + country) --------------------------------
 export async function reverseGeocode(lat, lon) {
-  const city = (await nearby(lat, lon, 500, { limit: 1 }))[0] ?? null;
-  let country = null;
-  if (city?.country_id) {
-    const db = await sql();
-    const rows = await db.query("SELECT * FROM countries WHERE id = $1 LIMIT 1", [city.country_id]);
-    country = rows[0] ?? null;
-  }
-  return { city, country };
+  await ensureSeeded();
+  const [nearest, ap, countryMap] = await Promise.all([
+    nearby(lat, lon, 250, { limit: 1 }),
+    nearestAirport(lat, lon),
+    getCountryNameMap(),
+  ]);
+  const nearestCity = nearest[0]
+    ? {
+        ...nearest[0],
+        countryName: countryMap.get(nearest[0].countryId)?.name ?? null,
+      }
+    : null;
+  const enrichedAirport = ap
+    ? {
+        ...ap,
+        countryName: countryMap.get(ap.countryId)?.name ?? null,
+      }
+    : null;
+
+  return {
+    nearestCity,
+    nearestAirport: enrichedAirport,
+    coordinates: { lat, lon },
+  };
 }

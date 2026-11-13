@@ -22,12 +22,12 @@ import { EmailCodeForm, PasswordForm, PhoneCodeForm } from "./auth-forms.jsx";
 
 // The three providers every visitor expects sit in a fixed order. Anything
 // else (Amazon) appears only once it is actually configured.
-const PROVIDER_ORDER = ["google", "microsoft", "apple", "amazon"];
-const CORE_PROVIDERS = new Set(["google", "microsoft", "apple"]);
+const PROVIDER_ORDER = ["google", "apple", "microsoft", "amazon"];
+const CORE_PROVIDERS = new Set(["google", "apple", "microsoft"]);
 
 const METHODS = [
+  { id: "password", label: "Password", Icon: KeyRound, cap: "password", needs: "Password sign-in is unavailable right now." },
   { id: "email", label: "Email code", Icon: Mail, cap: "emailOtp", needs: "Email codes need EMAIL_PROVIDER_KEY and EMAIL_FROM on the server." },
-  { id: "password", label: "Password", Icon: KeyRound, cap: "password", needs: "Password sign-in needs MONGODB_URI on the server." },
   { id: "phone", label: "Phone", Icon: Phone, cap: "phoneOtp", needs: "Text message codes need SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_FROM on the server." },
 ];
 
@@ -112,6 +112,10 @@ export function AuthPage() {
     setAuthenticated(data.user, data.method ?? null);
     if (data.claimed) {
       toast.success("Email confirmed. Sign-in methods added before it was confirmed were removed — set a new password in Settings.");
+    } else if (data.reset) {
+      toast.success("Password updated — welcome back.");
+    } else if (data.verified) {
+      toast.success("Email confirmed — welcome to Meridian.");
     } else {
       toast.success(data.created ? "Account created — welcome to Meridian." : "Welcome back.");
     }
@@ -175,7 +179,33 @@ export function AuthPage() {
             </div>
           )}
 
-          <div className="mt-7">
+          <div role="group" aria-label="Account mode"
+            className="mt-5 grid grid-cols-2 gap-1 rounded-full bg-white/[0.04] p-1">
+            <button
+              type="button"
+              aria-pressed={mode === "signin"}
+              onClick={() => navigate({ to: "/auth", search: keep(), replace: true })}
+              className={cn(
+                "h-9 rounded-full text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                mode === "signin" ? "bg-surface-raised text-fg shadow-border-hover" : "text-subtle hover:text-fg",
+              )}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "signup"}
+              onClick={() => navigate({ to: "/auth", search: keep({ mode: "signup" }), replace: true })}
+              className={cn(
+                "h-9 rounded-full text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                mode === "signup" ? "bg-surface-raised text-fg shadow-border-hover" : "text-subtle hover:text-fg",
+              )}
+            >
+              Create account
+            </button>
+          </div>
+
+          <div className="mt-6">
             {capsLoading && !caps ? (
               <>
                 <ProviderButtonsSkeleton />
@@ -185,9 +215,10 @@ export function AuthPage() {
             ) : (
               <>
                 {providers.length > 0 && (
-                  <section aria-label="Continue with a provider">
+                  <section aria-label={mode === "signup" ? "Sign up with a provider" : "Continue with a provider"}>
                     <ProviderButtons
                       providers={providers}
+                      mode={mode}
                       busy={oauthPending !== null}
                       pendingId={oauthPending}
                       onStart={startOAuth}
@@ -221,11 +252,11 @@ export function AuthPage() {
                           aria-selected={selected} aria-controls="method-panel"
                           onClick={() => setPicked(m.id)}
                           className={cn(
-                            "flex h-10 min-w-0 items-center justify-center gap-2 rounded-full px-2 text-[13px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:text-sm",
+                            "flex h-10 min-w-0 items-center justify-center gap-1.5 rounded-full px-1.5 text-[12px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:gap-2 sm:px-2 sm:text-sm",
                             selected ? "bg-surface-raised font-medium text-fg shadow-border-hover" : "text-subtle hover:text-fg",
                           )}
                         >
-                          <m.Icon className="size-4 shrink-0" aria-hidden />
+                          <m.Icon className="size-3.5 shrink-0 sm:size-4" aria-hidden />
                           <span className="truncate">{m.label}</span>
                         </button>
                       );
@@ -241,16 +272,18 @@ export function AuthPage() {
                     className={cn("animate-enter", methods.length > 1 && "mt-5")}>
                     {active.id === "email" && (
                       <EmailCodeForm mode={mode} email={email} onEmail={setEmail} disabled={formDisabled}
-                        unavailable={unavailable} diagnostics={diagnostics} onDone={done} />
+                        unavailable={unavailable} sandbox={caps?.emailOtp?.sandbox === true}
+                        diagnostics={diagnostics} onDone={done} />
                     )}
                     {active.id === "password" && (
                       <PasswordForm mode={mode} email={email} onEmail={setEmail} disabled={formDisabled}
-                        unavailable={unavailable} diagnostics={diagnostics} onDone={done}
-                        onUseEmailCode={caps?.emailOtp?.configured ? () => setPicked("email") : undefined} />
+                        unavailable={unavailable} diagnostics={diagnostics}
+                        canResetPassword={caps?.emailOtp?.configured === true} onDone={done} />
                     )}
                     {active.id === "phone" && (
                       <PhoneCodeForm mode={mode} disabled={formDisabled}
-                        unavailable={unavailable} diagnostics={diagnostics} onDone={done} />
+                        unavailable={unavailable} sandbox={caps?.phoneOtp?.sandbox === true}
+                        diagnostics={diagnostics} onDone={done} />
                     )}
                   </div>
                 )}
