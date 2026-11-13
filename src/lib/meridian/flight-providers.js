@@ -80,11 +80,18 @@ export async function getLiveTraffic({ lamin, lamax, lomin, lomax } = {}) {
     }
     const res = await fetch(`${OPENSKY_STATES}?${params}`, { signal: ctrl.signal, headers });
     if (res.status === 429) throw unavailable("livePositions", "Live traffic rate limit reached. Retry shortly.");
-    if (!res.ok) throw new Error(`OpenSky responded ${res.status}`);
+    if (!res.ok) throw unavailable("livePositions", `OpenSky live feed returned ${res.status}. Retry shortly.`);
     const json = await res.json();
     const fetchedAt = new Date().toISOString();
     const aircraft = (json.states ?? []).slice(0, 800).map((s) => normalizeState(s, fetchedAt)).filter(Boolean);
     return { aircraft, fetchedAt, source: "opensky", freshness: "LIVE" };
+  } catch (err) {
+    if (err?.code === "PROVIDER_UNAVAILABLE") throw err;
+    const msg =
+      err?.name === "AbortError"
+        ? "OpenSky live feed timed out from server region. Retry shortly or configure OpenSky credentials."
+        : "OpenSky live traffic feed temporarily unavailable.";
+    throw unavailable("livePositions", msg);
   } finally {
     clearTimeout(timer);
   }

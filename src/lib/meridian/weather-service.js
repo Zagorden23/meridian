@@ -8,7 +8,8 @@ import { TTL, withFreshness } from "./data-freshness.js";
 import { validateLatLon } from "./geo-math.js";
 
 const CURRENT_URL = "https://api.open-meteo.com/v1/forecast";
-const SOURCE = "open-meteo";
+const MET_NO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact";
+const USER_AGENT = "MeridianGlobeApp/1.0 (https://github.com/Zagorden23/meridian)";
 
 const CURRENT_FIELDS =
   "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility";
@@ -95,11 +96,97 @@ function normalize(location, lat, lon, json) {
             condition: CODE_MAP[d.weather_code?.[i]] ?? null,
           }))
         : [],
-      source: SOURCE,
+      source: "open-meteo",
       fetchedAt,
     },
     TTL.weatherCurrentMs,
   );
+}
+
+function metNoSymbolLabel(symbol) {
+  if (!symbol || typeof symbol !== "string") return null;
+  const base = symbol.replace(/_(day|night|polartwilight)$/, "");
+  if (base.includes("thunder")) return "Thunderstorm";
+  if (base.includes("heavyrain")) return "Heavy rain";
+  if (base.includes("lightrain") || base.includes("rainshowers")) return "Light rain";
+  if (base.includes("rain")) return "Rain";
+  if (base.includes("sleet")) return "Sleet";
+  if (base.includes("heavysnow")) return "Heavy snow";
+  if (base.includes("snow")) return "Snow";
+  if (base === "fog") return "Fog";
+  if (base === "cloudy") return "Overcast";
+  if (base === "partlycloudy") return "Partly cloudy";
+  if (base === "fair") return "Mainly clear";
+  if (base === "clearsky") return "Clear sky";
+  return base;
+}
+
+function normalizeMetNo(location, lat, lon, json) {
+  const series = Array.isArray(json?.properties?.timeseries) ? json.properties.timeseries : [];
+  if (!series.length) throw new Error("MET Norway returned empty timeseries");
+  const cur = series[0];
+  const inst = cur?.data?.instant?.details ?? {};
+  const next1 = cur?.data?.next_1_hours ?? cur?.data?.next_6_hours ?? {};
+  const symbol = next1?.summary?.symbol_code ?? cur?.data?.next_6_hours?.summary?.symbol_code ?? null;
+  const byDay = new Map();
+  for (const pt of series) {
+    const date = typeof pt?.time === "string" ? pt.time.slice(0, 10) : null;
+    const t = pt?.data?.instant?.details?.air_temperature;
+    if (!date || typeof t !== "number") continue;
+    const rec = byDay.get(date) ?? { min: t, max: t, precip: 0, symbol: null };
+    rec.min = Math.min(rec.min, t);
+    rec.max = Math.max(rec.max, t);
+    const p = pt?.data?.next_6_hours?.details?.precipitation_amount ?? pt?.data?.next_1_hours?.details?.precipitation_amount ?? 0;
+    rec.precip = Math.max(rec.precip, Number(p) || 0);
+    if (!rec.symbol || pt.time.includes("T12:00")) {
+      rec.symbol = pt?.data?.next_6_hours?.summary?.symbol_code ?? pt?.data?.next_1_hours?.summary?.symbol_code ?? rec.symbol;
+    }
+    byDay.set(date, rec);
+  }
+  const fetchedAt = new Date().toISOString();
+  return withFreshness(
+    {
+      location: location ?? null,
+      latitude: Number(lat),
+      longitude: Number(lon),
+      timestamp: cur.time ?? fetchedAt,
+      temperature: inst.air_temperature ?? null,
+      feelsLike: inst.air_temperature ?? null,
+      humidity: inst.relative_humidity ?? null,
+      pressure: inst.air_pressure_at_sea_level ?? null,
+      windSpeed: inst.wind_speed != null ? Math.round(inst.wind_speed * 3.6 * 10) / 10 : null,
+      windDirection: inst.wind_from_direction ?? null,
+      visibility: null,
+      cloudCover: inst.cloud_area_fraction ?? null,
+      precipitation: next1?.details?.precipitation_amount ?? null,
+      weatherCode: null,
+      condition: metNoSymbolLabel(symbol),
+      isDay: typeof symbol === "string" ? !symbol.endsWith("_night") : null,
+      forecast: [...byDay.entries()].slice(0, 5).map(([date, rec]) => ({
+        date,
+        tempMax: Math.round(rec.max * 10) / 10,
+        tempMin: Math.round(rec.min * 10) / 10,
+        precipitationProbability: rec.precip > 0.2 ? 60 : 10,
+        weatherCode: null,
+        condition: metNoSymbolLabel(rec.symbol),
+      })),
+      source: "met-no",
+      fetchedAt,
+    },
+    TTL.weatherCurrentMs,
+  );
+}
+
+async function fetchJsonWithTimeout(url, headers, timeoutMs = 6500) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers });
+    if (!res.ok) throw new Error(`Weather provider responded ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function getWeather({ lat, lon, location = null }) {
@@ -107,34 +194,45 @@ export async function getWeather({ lat, lon, location = null }) {
     throw Object.assign(new Error("Invalid coordinates"), { status: 400, code: "INVALID_COORDS" });
   }
   const key = cacheKey(lat, lon);
-  const url =
+  const freshCached = await readCache(key);
+  if (freshCached && !freshCached.stale) return freshCached;
+
+  const openMeteoUrl =
     `${CURRENT_URL}?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}` +
     `&current=${CURRENT_FIELDS}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code` +
     `&hourly=temperature_2m&forecast_days=5&timezone=auto&wind_speed_unit=kmh`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 9000);
+  const metNoUrl = `${MET_NO_URL}?lat=${Number(lat).toFixed(4)}&lon=${Number(lon).toFixed(4)}`;
+
   try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { accept: "application/json" } });
-    if (!res.ok) throw new Error(`Weather provider responded ${res.status}`);
-    const json = await res.json();
-    const payload = normalize(location, lat, lon, json);
+    let payload;
+    try {
+      const json = await fetchJsonWithTimeout(openMeteoUrl, {
+        accept: "application/json",
+        "user-agent": USER_AGENT,
+      });
+      payload = normalize(location, lat, lon, json);
+    } catch {
+      const json = await fetchJsonWithTimeout(metNoUrl, {
+        accept: "application/json",
+        "user-agent": USER_AGENT,
+      });
+      payload = normalizeMetNo(location, lat, lon, json);
+    }
     await writeCache(key, payload, TTL.weatherCurrentMs);
     // Best-effort MongoDB Atlas mirror (TTL 30 min); never blocks/fails.
     try {
       const { cacheWeatherMongo } = await import("./mongo.js");
-      await cacheWeatherMongo({ lat, lon, payload, source: SOURCE });
+      await cacheWeatherMongo({ lat, lon, payload, source: payload.source });
     } catch { /* fallback cache already written */ }
     return { ...payload, cached: false };
   } catch (err) {
     const cached = await readCache(key);
-    if (cached) return { ...cached, stale: true, source: cached.source ?? SOURCE };
+    if (cached) return { ...cached, stale: true, source: cached.source ?? "open-meteo" };
     const e = new Error("Weather temporarily unavailable.");
     e.status = 503;
     e.code = "WEATHER_UNAVAILABLE";
     e.cause = err;
     throw e;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
