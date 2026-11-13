@@ -23,6 +23,41 @@ projects:
                 sync: false
               - key: SESSION_SECRET
                 generateValue: true
+              # Public URL of this service (or your custom domain), e.g.
+              # https://meridian.onrender.com — builds the OAuth callback URLs.
+              - key: APP_URL
+                sync: false
+              # Sign-in methods: each one appears on the sign-in screen only
+              # once its variables are set. See .env.example for where each
+              # value comes from, and `npm run auth:doctor` to verify them.
+              - key: GOOGLE_CLIENT_ID
+                sync: false
+              - key: GOOGLE_CLIENT_SECRET
+                sync: false
+              - key: MICROSOFT_CLIENT_ID
+                sync: false
+              - key: MICROSOFT_CLIENT_SECRET
+                sync: false
+              - key: MICROSOFT_TENANT_ID
+                value: common
+              - key: APPLE_CLIENT_ID
+                sync: false
+              - key: APPLE_TEAM_ID
+                sync: false
+              - key: APPLE_KEY_ID
+                sync: false
+              - key: APPLE_PRIVATE_KEY
+                sync: false
+              - key: EMAIL_PROVIDER_KEY
+                sync: false
+              - key: EMAIL_FROM
+                sync: false
+              - key: SMS_PROVIDER_KEY
+                sync: false
+              - key: SMS_PROVIDER_SECRET
+                sync: false
+              - key: SMS_VERIFY_SERVICE_SID
+                sync: false
               - key: WEATHER_PROVIDER
                 value: open-meteo
               - key: FLIGHT_API_KEY

@@ -2,7 +2,7 @@
 // Codes are generated, scrypt-hashed and delivered here; plaintext codes are
 // never logged in production, never returned in production, and purpose-bound.
 import { clientKey, rateLimit } from "./rate-limit.js";
-import { generateOtpCode, hashOtp, verifyOtp } from "./auth.js";
+import { checkExternalOtp, generateOtpCode, hashOtp, verifyOtp } from "./auth.js";
 import {
   consumeOtpRecord,
   createOtpRecord,
@@ -10,10 +10,23 @@ import {
   findLatestActiveOtp,
   incrementOtpAttempts,
   invalidateSiblingOtps,
+  setOtpExternal,
 } from "./auth-storage.js";
 
 export const OTP_TTL_MS = 5 * 60 * 1000;
 export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+
+// Every code sent costs money, and automated "SMS pumping" spreads requests
+// across many numbers and addresses to slip under per-recipient limits. A
+// ceiling on codes sent per hour, per channel, bounds the worst case; raise it
+// with OTP_SMS_HOURLY_LIMIT / OTP_EMAIL_HOURLY_LIMIT as real traffic grows.
+const HOURLY_SEND_CEILING = { phone: ["OTP_SMS_HOURLY_LIMIT", 300], email: ["OTP_EMAIL_HOURLY_LIMIT", 1000] };
+
+function hourlySendCeiling(channel) {
+  const [envKey, fallback] = HOURLY_SEND_CEILING[channel] ?? [null, 1000];
+  const configured = Number.parseInt(process.env[envKey] ?? "", 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+}
 
 function limit(key, opts) {
   try {
@@ -43,6 +56,15 @@ export async function requestOtp(request, identifier, channel, send, { purpose =
     err.details = { resendInSeconds: wait };
     throw err;
   }
+  try {
+    rateLimit(`otp:sent:${channel}`, { limit: hourlySendCeiling(channel), windowMs: 60 * 60 * 1000 });
+  } catch {
+    console.error(`[auth] hourly ${channel} code ceiling reached — refusing further sends this hour`);
+    const err = new Error("Too many attempts. Please wait and try again.");
+    err.status = 429;
+    err.code = "RATE_LIMITED";
+    throw err;
+  }
   const code = generateOtpCode();
   const { salt, codeHash } = await hashOtp(code);
   const doc = await createOtpRecord({
@@ -63,6 +85,8 @@ export async function requestOtp(request, identifier, channel, send, { purpose =
     await deleteOtpRecord(doc._id).catch(() => {});
     throw err;
   }
+  // The provider issued its own code (Twilio Verify): record who checks it.
+  if (sent?.external) await setOtpExternal(doc._id, sent.external);
   await invalidateSiblingOtps({ identifier, channel, purpose, exceptId: doc._id }).catch(() => {});
   return {
     channel,
@@ -102,7 +126,9 @@ export async function consumeOtp(request, identifier, code, { channel = "email",
     err.code = "OTP_LOCKED";
     throw err;
   }
-  const valid = await verifyOtp(cleanCode, doc.salt, doc.codeHash);
+  const valid = doc.external
+    ? await checkExternalOtp(doc.external, identifier, cleanCode)
+    : await verifyOtp(cleanCode, doc.salt, doc.codeHash);
   if (!valid) {
     const nextAttempts = await incrementOtpAttempts(doc._id);
     const remaining = maxAttempts - nextAttempts;

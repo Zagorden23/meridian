@@ -64,8 +64,10 @@ cp .env.example .env   # then fill in values (never commit .env)
 npm run dev            # serves on 0.0.0.0:8080
 ```
 
-Without `MONGODB_URI` the app runs on the embedded fallback DB; auth
-endpoints return honest `503` until their credentials are configured.
+`MONGODB_URI` is required (a local `mongod` is fine). In development, email
+and phone codes are shown on the sign-in screen instead of being sent, so the
+flows can be exercised without Resend or Twilio; that preview never exists in
+a production build.
 
 ## Environment variables
 
@@ -82,7 +84,7 @@ See `.env.example` (every variable documented there). Summary:
 | Weather | `WEATHER_PROVIDER=open-meteo` (keyless) |
 | Flights | `FLIGHT_API_KEY`, optional `OPENSKY_CLIENT_ID/SECRET` |
 | Email OTP | `EMAIL_PROVIDER_KEY` `EMAIL_FROM` (Resend) |
-| Phone OTP | `SMS_PROVIDER_KEY` `SMS_PROVIDER_SECRET` `SMS_FROM` (Twilio) |
+| Phone OTP | `SMS_PROVIDER_KEY` `SMS_PROVIDER_SECRET` + `SMS_VERIFY_SERVICE_SID` (Twilio Verify, recommended) or `SMS_FROM` |
 
 ## MongoDB setup
 
@@ -90,15 +92,43 @@ Create an Atlas cluster (or local `mongod`), set `MONGODB_URI`, and the app
 connects on first request (`connectMongo()`), creating `2dsphere` and lookup
 indexes automatically. Collections are created lazily — no migration step.
 
-## OAuth setup
+## Going live with sign-in
 
-1. In each provider console, register the callback
-   `<APP_URL>/api/auth/<provider>/callback`
+A sign-in method is offered to visitors only once its credentials are set on
+the server — until then it is left off the sign-in screen rather than shown
+broken. Password sign-in needs only MongoDB; everything else needs an account
+with the provider:
+
+| Method | Where the credentials come from | Variables |
+|---|---|---|
+| Google | Google Cloud Console → Credentials → OAuth client ID (Web). Publish the consent screen. | `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET` |
+| Microsoft | Entra admin center → App registrations (Web; any directory + personal accounts) | `MICROSOFT_CLIENT_ID` `MICROSOFT_CLIENT_SECRET` |
+| Apple | Apple Developer → Services ID + Sign in with Apple key (.p8). HTTPS domain required. | `APPLE_CLIENT_ID` `APPLE_TEAM_ID` `APPLE_KEY_ID` `APPLE_PRIVATE_KEY` |
+| Email codes, password reset | Resend → verify your sending domain (DNS) → API key | `EMAIL_PROVIDER_KEY` `EMAIL_FROM` |
+| Phone codes | Twilio → Verify → create a service (6-digit codes) | `SMS_PROVIDER_KEY` `SMS_PROVIDER_SECRET` `SMS_VERIFY_SERVICE_SID` |
+
+1. Set `APP_URL` to the public HTTPS address and register this callback with
+   each OAuth provider: `<APP_URL>/api/auth/<provider>/callback`
    (e.g. `https://meridian.example.com/api/auth/google/callback`).
-   Apple additionally needs the Services ID, Team ID, Key ID and private key.
-2. Set the corresponding env vars and redeploy.
-3. `GET /api/auth/providers` reports per-provider status (flags only, never
-   secrets); the sign-in screen enables each button only when configured.
+2. Put the variables in the host's dashboard (`render.yaml` declares them all).
+3. Check them before and after deploying:
+
+   ```bash
+   npm run auth:doctor                        # what is live; tests each credential with its provider
+   npm run auth:doctor -- --email you@x.com   # also send a real email through Resend
+   npm run auth:doctor -- --sms +14155550123  # also send a real SMS through Twilio
+   ```
+
+   It reports, per method, READY / OFF / PROBLEM — including a callback URL
+   that is not registered, a sending domain that is not verified, or a Twilio
+   trial account that cannot reach real customers.
+4. `npm run build && npm run test:auth-e2e` drives every method through the
+   production build in a real browser against stand-in providers (no
+   credentials needed), so a code change cannot silently break sign-in.
+
+`GET /api/auth/providers` reports the same per-method status (flags only,
+never secrets). Provider rejections are written to the server log with the
+provider's own reason.
 
 ## API provider setup
 
@@ -120,6 +150,8 @@ npm run build    # production build (Vite + Nitro)
 npm start        # serve production build (Render / any Node host)
 npm run lint     # eslint
 npm test         # node:test suites (auth, geo-math, flights, timezone, …)
+npm run auth:doctor     # sign-in readiness: config + live credential checks
+npm run test:auth-e2e   # every sign-in method, production build, real browser
 ```
 
 ## Deployment (Render)
@@ -137,5 +169,10 @@ production URL juggling and no CORS wildcard (authenticated APIs never use
 - OAuth: authorization-code flow, signed `state`+`nonce` HttpOnly cookies,
   server-side code exchange, JWKS `id_token` verification, open-redirect-safe
   `returnTo`, no auto-merge on bare email (explicit link flow, `409` otherwise).
+- One-time codes: scrypt-hashed, single-use, purpose-bound, 5-minute expiry,
+  5 attempts, 60s resend cooldown, per-recipient and per-IP limits plus an
+  hourly ceiling on codes sent (`OTP_SMS_HOURLY_LIMIT`, `OTP_EMAIL_HOURLY_LIMIT`).
+- POST bodies must be `application/json`, so another site cannot drive
+  sign-in with a visitor's browser.
 - Rate limiting on API + OTP routes, security headers (`nosniff`, `DENY`,
   `no-store`) on API responses, request-body validation, no secret logging.

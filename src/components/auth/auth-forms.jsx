@@ -35,18 +35,22 @@ function passwordStrength(pw) {
 }
 
 function Field({ label, optional, hint, right, children }) {
+  // `right` (e.g. "Forgot password?") sits beside the label text but outside
+  // the <label>: a label names the first control inside it, so a button placed
+  // within would steal the label from the input — the input would be unnamed
+  // for screen readers and a click on the label text would press the button.
   return (
-    <label className="block text-xs text-muted">
-      <span className="flex items-center justify-between gap-2">
-        <span>
+    <div className="relative text-xs text-muted">
+      <label className="block">
+        <span className={right ? "block pr-32" : "block"}>
           {label}
           {optional && <span className="text-subtle"> (optional)</span>}
         </span>
-        {right}
-      </span>
-      <span className="mt-1.5 block">{children}</span>
-      {hint && <span className="mt-1 block text-[11px] text-subtle">{hint}</span>}
-    </label>
+        <span className="mt-1.5 block">{children}</span>
+        {hint && <span className="mt-1 block text-[11px] text-subtle">{hint}</span>}
+      </label>
+      {right && <span className="absolute right-0 top-0 flex items-center">{right}</span>}
+    </div>
   );
 }
 
@@ -188,9 +192,13 @@ function StrengthMeter({ password }) {
 
 export function OtpBoxes({ value, onChange, disabled, autoFocus }) {
   const refs = useRef([]);
+  // Focus the first box when the step opens, and again whenever the boxes are
+  // emptied and usable — after a wrong code is cleared, the next keystroke
+  // should land without the person having to click back in.
+  const empty = value === "";
   useEffect(() => {
-    if (autoFocus) refs.current[0]?.focus();
-  }, [autoFocus]);
+    if (autoFocus && empty && !disabled) refs.current[0]?.focus();
+  }, [autoFocus, empty, disabled]);
 
   const set = (i, raw) => {
     const digits = raw.replace(/\D/g, "");
@@ -220,6 +228,9 @@ export function OtpBoxes({ value, onChange, disabled, autoFocus }) {
             autoComplete={i === 0 ? "one-time-code" : "off"}
             aria-label={`Digit ${i + 1} of 6`}
             onChange={(e) => set(i, e.target.value)}
+            // Select the digit already there so typing replaces it instead of
+            // being read as a second digit pushed into the same box.
+            onFocus={(e) => e.target.select()}
             onKeyDown={(e) => {
               if (e.key === "Backspace" && !value[i] && i > 0) refs.current[i - 1]?.focus();
               if (e.key === "ArrowLeft" && i > 0) refs.current[i - 1]?.focus();
@@ -267,6 +278,9 @@ function useCodeFlow({ request, verify, diagnostics, sentMessage, onDone }) {
   const setCode = useCallback((next) => {
     const clean = String(next ?? "").replace(/\D/g, "").slice(0, 6);
     if (clean.length < 6) autoVerifyCodeRef.current = "";
+    // Correcting the code answers the last error — clear it, or the corrected
+    // code would sit there without being checked.
+    setError("");
     setCodeState(clean);
   }, []);
 
@@ -304,7 +318,9 @@ function useCodeFlow({ request, verify, diagnostics, sentMessage, onDone }) {
       doneCb?.(res.data);
     } catch (err) {
       setError(apiErrorMessage(err, { diagnostics }));
-      if (err?.code === "OTP_LOCKED" || err?.code === "OTP_EXPIRED" || err?.code === "OTP_NOT_FOUND") {
+      // Whatever was wrong with it, this code is spent: empty the boxes so
+      // the next one can be typed straight in (the message stays until then).
+      if (String(err?.code ?? "").startsWith("OTP_")) {
         setCodeState("");
         autoVerifyCodeRef.current = "";
       }

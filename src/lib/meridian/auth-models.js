@@ -60,6 +60,9 @@ const OtpCodeSchema = new mongoose.Schema(
     },
     codeHash: { type: String, required: true },
     salt: { type: String, required: true },
+    // Set when an outside verifier (e.g. "twilio-verify") issued the real code;
+    // the hash above then guards nothing and the verifier is asked instead.
+    external: { type: String, default: null },
     attempts: { type: Number, default: 0 },
     maxAttempts: { type: Number, default: 5 },
     ip: { type: String, default: null },

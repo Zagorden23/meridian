@@ -91,6 +91,7 @@ function mapOtpDoc(doc) {
     purpose: doc.purpose,
     codeHash: doc.codeHash,
     salt: doc.salt,
+    external: doc.external ?? null,
     attempts: Number(doc.attempts ?? 0),
     maxAttempts: Number(doc.maxAttempts ?? 5),
     resendAvailableAt: doc.resendAvailableAt ?? null,
@@ -244,7 +245,7 @@ export async function saveUser(user) {
 
   try {
     const doc = await User()
-      .findByIdAndUpdate(userId, updateOp, { new: true })
+      .findByIdAndUpdate(userId, updateOp, { returnDocument: "after" })
       .lean();
     return mapUserDoc(doc, { includeSecrets: true });
   } catch (err) {
@@ -362,12 +363,19 @@ export async function createOtpRecord({
   return mapOtpDoc(doc.toObject ? doc.toObject() : doc);
 }
 
+export async function setOtpExternal(otpId, verifier) {
+  await ensureMongo();
+  const strId = otpId ? String(otpId) : "";
+  if (!strId || !mongoose.Types.ObjectId.isValid(strId)) return;
+  await OtpCode().updateOne({ _id: strId }, { $set: { external: String(verifier) } });
+}
+
 export async function incrementOtpAttempts(otpId) {
   await ensureMongo();
   const strId = otpId ? String(otpId) : "";
   if (!strId || !mongoose.Types.ObjectId.isValid(strId)) return 0;
   const doc = await OtpCode()
-    .findByIdAndUpdate(strId, { $inc: { attempts: 1 } }, { new: true })
+    .findByIdAndUpdate(strId, { $inc: { attempts: 1 } }, { returnDocument: "after" })
     .lean();
   return Number(doc?.attempts ?? 0);
 }
@@ -434,7 +442,7 @@ export async function upsertSavedLocation(userId, entry) {
         },
         $setOnInsert: { createdAt: new Date() },
       },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     )
     .lean();
   return mapSavedDoc(doc);

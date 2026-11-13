@@ -55,6 +55,7 @@ const MESSAGES = {
   OTP_RESEND_COOLDOWN: "Please wait a moment before requesting a new code.",
   EMAIL_SEND_FAILED: "The email couldn't be sent. Please try again shortly.",
   SMS_SEND_FAILED: "The text message couldn't be sent. Please try again shortly.",
+  OTP_CHECK_FAILED: "The code couldn't be checked. Please try again shortly.",
   EMAIL_PROVIDER_UNCONFIGURED: "Email codes aren't available right now.",
   SMS_PROVIDER_UNCONFIGURED: "Text message codes aren't available right now.",
   // Input and limits
@@ -72,7 +73,7 @@ const DIAGNOSTICS = {
   OAUTH_EXCHANGE_FAILED: "Check that this app's callback URL is registered in the provider console and that the client secret is current.",
   OAUTH_VERIFY_FAILED: "The provider's ID token failed verification (issuer, audience, signature or nonce) — see the server log.",
   EMAIL_PROVIDER_UNCONFIGURED: "Set EMAIL_PROVIDER_KEY and EMAIL_FROM on the server.",
-  SMS_PROVIDER_UNCONFIGURED: "Set SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_FROM on the server.",
+  SMS_PROVIDER_UNCONFIGURED: "Set SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_VERIFY_SERVICE_SID (or SMS_FROM) on the server.",
   MONGO_UNCONFIGURED: "Set MONGODB_URI on the server.",
   SESSION_SECRET_MISSING: "Set SESSION_SECRET (32+ random characters) on the server and restart.",
 };

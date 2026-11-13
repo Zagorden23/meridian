@@ -28,7 +28,7 @@ const CORE_PROVIDERS = new Set(["google", "apple", "microsoft"]);
 const METHODS = [
   { id: "password", label: "Password", Icon: KeyRound, cap: "password", needs: "Password sign-in is unavailable right now." },
   { id: "email", label: "Email code", Icon: Mail, cap: "emailOtp", needs: "Email codes need EMAIL_PROVIDER_KEY and EMAIL_FROM on the server." },
-  { id: "phone", label: "Phone", Icon: Phone, cap: "phoneOtp", needs: "Text message codes need SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_FROM on the server." },
+  { id: "phone", label: "Phone", Icon: Phone, cap: "phoneOtp", needs: "Text message codes need SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_VERIFY_SERVICE_SID (or SMS_FROM) on the server." },
 ];
 
 function ObservatoryVisual() {

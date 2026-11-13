@@ -19,6 +19,8 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "node -e \"process.exit(0)\"",
     "check:auth": "node scripts/check-auth-invariant.mjs",
+    "auth:doctor": "node scripts/auth-doctor.mjs",
+    "test:auth-e2e": "node scripts/auth-e2e/run.mjs",
     "test": "node --test scripts/contrast-audit.test.mjs && node --test src/lib/app-data/app-data.test.js src/lib/app-data/readiness-schedule.test.js src/lib/auth/gate-identity.test.js src/lib/auth/sign-in-gate.test.js && node --test src/lib/meridian/*.test.js",
     "lint": "eslint .",
     "format": "prettier --write ."

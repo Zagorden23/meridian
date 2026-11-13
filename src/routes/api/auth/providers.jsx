@@ -9,6 +9,7 @@ import {
   providerStatus,
   smsCanDeliver,
   smsConfigured,
+  smsMissingEnv,
 } from "@/lib/meridian/auth.js";
 
 // Public capability map — flags only, never secrets. The auth UI renders
@@ -31,7 +32,7 @@ export const Route = createFileRoute("/api/auth/providers")({
             const off = oauth.filter((p) => !p.configured).map((p) => `${p.id} (${p.missing.join(", ")})`);
             if (off.length) console.warn(`[auth] sign-in providers not configured: ${off.join("; ")}`);
             if (!emailConfigured()) console.warn("[auth] email codes not configured (EMAIL_PROVIDER_KEY, EMAIL_FROM)");
-            if (!smsConfigured()) console.warn("[auth] SMS codes not configured (SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET, SMS_FROM)");
+            if (!smsConfigured()) console.warn(`[auth] SMS codes not configured (${smsMissingEnv().join(", ")})`);
           }
           return sendData({
             diagnostics,
@@ -44,7 +45,7 @@ export const Route = createFileRoute("/api/auth/providers")({
               sandbox: isDevOtpSandbox() && !emailConfigured(),
             },
             phoneOtp: {
-              ...hint(smsConfigured(), ["SMS_PROVIDER_KEY", "SMS_PROVIDER_SECRET", "SMS_FROM"]),
+              ...hint(smsConfigured(), smsMissingEnv()),
               configured: smsCanDeliver(),
               providerConfigured: smsConfigured(),
               sandbox: isDevOtpSandbox() && !smsConfigured(),

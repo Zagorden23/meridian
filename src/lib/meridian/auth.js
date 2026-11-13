@@ -162,8 +162,39 @@ export function emailConfigured() {
   return Boolean(process.env.EMAIL_PROVIDER_KEY && process.env.EMAIL_FROM);
 }
 
+const envValue = (key) => String(process.env[key] ?? "").trim();
+
+/**
+ * Twilio Verify service (`VA…`). When set, Twilio generates, delivers and
+ * checks the code itself — it picks a compliant sender per destination country
+ * and applies its own fraud protection, which a single `SMS_FROM` number
+ * cannot do worldwide. Without it, codes go out through the Messages API from
+ * `SMS_FROM` (an E.164 number or a Messaging Service SID, `MG…`).
+ */
+export function smsVerifyServiceSid() {
+  return envValue("SMS_VERIFY_SERVICE_SID");
+}
+
+/** Server variables phone codes are still waiting for (empty when ready). */
+export function smsMissingEnv() {
+  const missing = ["SMS_PROVIDER_KEY", "SMS_PROVIDER_SECRET"].filter((key) => !envValue(key));
+  if (!smsVerifyServiceSid() && !envValue("SMS_FROM")) missing.push("SMS_VERIFY_SERVICE_SID or SMS_FROM");
+  return missing;
+}
+
 export function smsConfigured() {
-  return Boolean(process.env.SMS_PROVIDER_KEY && process.env.SMS_PROVIDER_SECRET && process.env.SMS_FROM);
+  return smsMissingEnv().length === 0;
+}
+
+/** A provider's own explanation for a rejected send — logged, never shown to users. */
+async function providerErrorDetail(res) {
+  const text = await res.text().catch(() => "");
+  try {
+    const json = JSON.parse(text);
+    return [json.name ?? json.code, json.message ?? json.error].filter((v) => v != null && v !== "").join(": ").slice(0, 300);
+  } catch {
+    return text.slice(0, 300);
+  }
 }
 
 /**
@@ -235,6 +266,9 @@ export async function sendEmailOtp(email, code, { purpose = "auth" } = {}) {
       signal: AbortSignal.timeout(12000),
     });
     if (!res.ok) {
+      // Usually an unverified sending domain or a revoked key — say so in the
+      // server log, where the operator can act on it.
+      console.error(`[auth] Resend rejected the ${purpose} email (HTTP ${res.status}): ${await providerErrorDetail(res)}`);
       throw httpError(502, "EMAIL_SEND_FAILED", "The verification email could not be sent. Try again shortly.");
     }
     return { delivery: "resend" };
@@ -247,22 +281,60 @@ export async function sendEmailOtp(email, code, { purpose = "auth" } = {}) {
     "Email delivery is not configured on this server. Set EMAIL_PROVIDER_KEY and EMAIL_FROM.");
 }
 
-export async function sendPhoneOtp(phone, code, { purpose = "auth" } = {}) {
-  if (smsConfigured()) {
-    const sid = process.env.SMS_PROVIDER_KEY;
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`;
-    const basic = Buffer.from(`${sid}:${process.env.SMS_PROVIDER_SECRET}`).toString("base64");
-    const res = await fetch(url, {
+const TWILIO_VERIFY = "twilio-verify";
+
+function twilioHeaders() {
+  const basic = Buffer.from(`${envValue("SMS_PROVIDER_KEY")}:${envValue("SMS_PROVIDER_SECRET")}`).toString("base64");
+  return { authorization: `Basic ${basic}`, "content-type": "application/x-www-form-urlencoded" };
+}
+
+async function twilioPost(url, params, unreachable = ["SMS_SEND_FAILED", "The verification SMS could not be sent. Try again shortly."]) {
+  try {
+    return await fetch(url, {
       method: "POST",
-      headers: { authorization: `Basic ${basic}`, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        From: process.env.SMS_FROM,
-        To: phone,
-        Body: `Your MERIDIAN verification code is ${code}. It expires in 5 minutes.`,
-      }),
+      headers: twilioHeaders(),
+      body: new URLSearchParams(params),
       signal: AbortSignal.timeout(12000),
     });
+  } catch (err) {
+    console.error("[auth] Twilio request failed:", err?.message ?? err);
+    throw httpError(502, ...unreachable);
+  }
+}
+
+export async function sendPhoneOtp(phone, code, { purpose = "auth" } = {}) {
+  if (smsConfigured()) {
+    const verifySid = smsVerifyServiceSid();
+    if (verifySid) {
+      // Twilio Verify issues its own code; ours is never sent and stays unusable.
+      const res = await twilioPost(
+        `https://verify.twilio.com/v2/Services/${encodeURIComponent(verifySid)}/Verifications`,
+        { To: phone, Channel: "sms" },
+      );
+      if (!res.ok) {
+        console.error(`[auth] Twilio Verify rejected the ${purpose} SMS (HTTP ${res.status}): ${await providerErrorDetail(res)}`);
+        if (res.status === 429) {
+          throw httpError(429, "RATE_LIMITED", "Too many codes requested for this number. Please wait and try again.");
+        }
+        if (res.status === 400) {
+          throw httpError(400, "INVALID_PHONE", "This phone number can't receive text message codes. Check the number and try again.");
+        }
+        throw httpError(502, "SMS_SEND_FAILED", "The verification SMS could not be sent. Try again shortly.");
+      }
+      return { delivery: TWILIO_VERIFY, external: TWILIO_VERIFY };
+    }
+    const from = envValue("SMS_FROM");
+    const res = await twilioPost(
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(envValue("SMS_PROVIDER_KEY"))}/Messages.json`,
+      {
+        ...(/^MG[0-9a-fA-F]{32}$/.test(from) ? { MessagingServiceSid: from } : { From: from }),
+        To: phone,
+        Body: `Your MERIDIAN verification code is ${code}. It expires in 5 minutes.`,
+      },
+    );
     if (!res.ok) {
+      // Unregistered sender, blocked destination country, trial-account limits…
+      console.error(`[auth] Twilio rejected the ${purpose} SMS (HTTP ${res.status}): ${await providerErrorDetail(res)}`);
       throw httpError(502, "SMS_SEND_FAILED", "The verification SMS could not be sent. Try again shortly.");
     }
     return { delivery: "twilio" };
@@ -272,7 +344,41 @@ export async function sendPhoneOtp(phone, code, { purpose = "auth" } = {}) {
     return { delivery: "dev-sandbox", devCode: code };
   }
   throw httpError(503, "SMS_PROVIDER_UNCONFIGURED",
-    "SMS delivery is not configured on this server. Set SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_FROM.");
+    "SMS delivery is not configured on this server. Set SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_VERIFY_SERVICE_SID (or SMS_FROM).");
+}
+
+/**
+ * Check a code that an outside verifier issued (see `sendPhoneOtp`). Resolves
+ * true/false for a right/wrong code and throws when the verifier no longer
+ * holds a pending verification for this number.
+ */
+export async function checkExternalOtp(verifier, identifier, code) {
+  if (verifier !== TWILIO_VERIFY) {
+    throw httpError(400, "OTP_NOT_FOUND", "No active code. Request a new one.");
+  }
+  const verifySid = smsVerifyServiceSid();
+  if (!verifySid || !smsConfigured()) {
+    throw httpError(503, "SMS_PROVIDER_UNCONFIGURED", "SMS verification is not configured on this server.");
+  }
+  const checkFailed = ["OTP_CHECK_FAILED", "The code could not be checked. Try again shortly."];
+  const res = await twilioPost(
+    `https://verify.twilio.com/v2/Services/${encodeURIComponent(verifySid)}/VerificationCheck`,
+    { To: identifier, Code: code },
+    checkFailed,
+  );
+  if (res.status === 404) {
+    // Twilio drops a verification once it expires, is approved, or is exhausted.
+    throw httpError(400, "OTP_EXPIRED", "This code has expired. Request a new one.");
+  }
+  if (res.status === 429) {
+    throw httpError(429, "OTP_LOCKED", "Too many incorrect attempts. Request a new code.");
+  }
+  if (!res.ok) {
+    console.error(`[auth] Twilio Verify check failed (HTTP ${res.status}): ${await providerErrorDetail(res)}`);
+    throw httpError(502, ...checkFailed);
+  }
+  const body = await res.json().catch(() => ({}));
+  return body?.status === "approved";
 }
 
 // --- Sessions + cookies + origin ----------------------------------------------
@@ -641,7 +747,7 @@ function applePrivateKey() {
   return cleaned.includes("\\n") ? cleaned.replace(/\\n/g, "\n") : cleaned;
 }
 
-async function appleClientSecret() {
+export async function appleClientSecret() {
   const teamId = process.env.APPLE_TEAM_ID;
   const keyId = process.env.APPLE_KEY_ID;
   const clientId = process.env.APPLE_CLIENT_ID;
