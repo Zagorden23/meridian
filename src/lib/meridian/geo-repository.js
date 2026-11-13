@@ -3,9 +3,25 @@
 // Portable SQL (bbox prefilter); haversine refinement happens in JS.
 import { getSql } from "@/lib/db.js";
 import { boundingBox, distanceKm, normalizeName } from "./geo-math.js";
+import { seedCurated } from "./seed.js";
+
+const globalRef = globalThis;
 
 async function sql() {
-  return getSql();
+  const db = await getSql();
+  // Auto-seed curated catalog once when empty (covers both in-memory PGLite
+  // and freshly provisioned Postgres instances).
+  globalRef.__meridianCatalogSeeded__ ??= (async () => {
+    const rows = await db.query("SELECT 1 FROM countries LIMIT 1");
+    if (!rows.length) {
+      await seedCurated(db.query);
+    }
+  })().catch((err) => {
+    globalRef.__meridianCatalogSeeded__ = undefined;
+    throw err;
+  });
+  await globalRef.__meridianCatalogSeeded__;
+  return db;
 }
 
 // --- Countries -------------------------------------------------------------

@@ -9,12 +9,12 @@ export const Route = createFileRoute("/api/auth/signup-password")({
       async POST({ request }) {
         try {
           const body = await readJson(request);
-          const { user, created, cookie } = await signupWithPassword(request, {
+          const { user, created, method, cookie } = await signupWithPassword(request, {
             email: body.email,
             password: body.password,
             name: body.name,
           });
-          return sendData({ user, created }, { cookies: [cookie] });
+          return sendData({ user, created, method }, { cookies: [cookie] });
         } catch (err) { return sendError(err); }
       },
     },

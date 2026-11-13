@@ -6,27 +6,35 @@ import { api } from "@/lib/meridian/api-client.js";
 import { useMeridianStore } from "@/store/meridian-store.js";
 import { useGlobeStore } from "@/store/globe-store.js";
 import { focusAircraft, fitFlightRoute, followAircraft, exitFlightTracking } from "@/lib/meridian/flight-camera.js";
-import { Panel, ErrorState, EmptyState, SourceLine } from "./ui.jsx";
+import { Panel, ErrorState, EmptyState, SkeletonRows, SourceLine, inputClass, primaryButtonClass } from "./ui.jsx";
+import { cn } from "@/lib/utils";
 
 export function FlightPanel() {
   const [number, setNumber] = useState("");
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState("");
+  const [checking, setChecking] = useState(false);
   const [traffic, setTraffic] = useState(null);
+  const [trafficError, setTrafficError] = useState(false);
   const [follow, setFollow] = useState(true);
   const trafficMode = useMeridianStore((s) => s.trafficMode);
   const trackedFlight = useMeridianStore((s) => s.trackedFlight);
   const setTrackedFlight = useMeridianStore((s) => s.setTrackedFlight);
   const poll = useRef(null);
 
-  const lookup = async () => {
+  const lookup = async (event) => {
+    event?.preventDefault();
+    if (!number.trim() || checking) return;
     setStatusError("");
     setStatus(null);
+    setChecking(true);
     try {
       const res = await api.flightStatus(number);
       setStatus(res.data);
     } catch (err) {
-      setStatusError(err.message);
+      setStatusError(err?.status >= 400 && err?.status < 500 ? err.message : "Flight status didn't respond. Please try again.");
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -36,14 +44,21 @@ export function FlightPanel() {
     const active = trafficMode || trackingId;
     if (!active) {
       setTraffic(null);
+      setTrafficError(false);
       return;
     }
     let alive = true;
     const tick = async () => {
       try {
         const res = await api.liveTraffic();
-        if (alive) setTraffic(res.data);
-      } catch { /* keep last frame */ }
+        if (alive) {
+          setTraffic(res.data);
+          setTrafficError(false);
+        }
+      } catch {
+        // Keep the last frame on screen; only an empty panel needs the error.
+        if (alive) setTrafficError(true);
+      }
     };
     tick();
     poll.current = setInterval(tick, 15000);
@@ -72,6 +87,7 @@ export function FlightPanel() {
   };
 
   const aircraft = traffic?.aircraft ?? [];
+  const aircraftCount = aircraft.length;
   const tracked = trackedFlight
     ? aircraft.find((a) => a.callsign === trackedFlight.callsign) ?? trackedFlight.position
     : null;
@@ -79,27 +95,35 @@ export function FlightPanel() {
   return (
     <div className="space-y-3">
       <Panel kicker="Flights" title="Check flight status">
-        <div className="flex gap-2">
+        <form onSubmit={lookup} className="flex gap-2">
           <input
             value={number}
             onChange={(e) => setNumber(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && lookup()}
             placeholder="6E 521 or AI 473"
             aria-label="Flight number"
-            className="min-w-0 flex-1 rounded-xl bg-surface-raised/70 px-3 py-2 text-sm uppercase outline-none placeholder:normal-case placeholder:text-subtle"
+            autoCapitalize="characters"
+            className={cn(inputClass, "min-w-0 flex-1 uppercase placeholder:normal-case")}
           />
-          <button type="button" onClick={lookup} className="rounded-xl bg-accent px-3 py-2 text-sm font-medium text-accent-fg">
-            Check
+          <button type="submit" disabled={checking || !number.trim()} className={primaryButtonClass}>
+            {checking ? "Checking…" : "Check"}
           </button>
+        </form>
+        <div aria-live="polite">
+          {statusError && <div className="mt-2"><ErrorState message={statusError} /></div>}
+          {status && (
+            <div className="mt-2 rounded-xl bg-surface-raised/50 px-3 py-2 text-sm">
+              <p className="font-medium">{status.flightNumber}</p>
+              {status.coverage && !status.coverage.available ? (
+                // No status source is connected — say so rather than show "UNKNOWN".
+                <p className="mt-0.5 text-xs leading-relaxed text-muted">
+                  Live flight status isn&apos;t connected yet, so there is nothing to report for this flight.
+                </p>
+              ) : (
+                <p className="text-xs text-subtle">Status: {String(status.status ?? "Unknown").replaceAll("_", " ").toLowerCase()}</p>
+              )}
+            </div>
+          )}
         </div>
-        {statusError && <div className="mt-2"><ErrorState message={statusError} /></div>}
-        {status && (
-          <div className="mt-2 rounded-xl bg-surface-raised/50 px-3 py-2 text-sm">
-            <p className="font-medium">{status.flightNumber}</p>
-            <p className="text-xs text-subtle">Status: {status.status}</p>
-            <SourceLine source="Flight provider" fetchedAt={new Date().toISOString()} />
-          </div>
-        )}
       </Panel>
 
       <Panel kicker="Live" title="Air traffic" action={
@@ -109,8 +133,19 @@ export function FlightPanel() {
           </button>
         )
       }>
-        {!trafficMode && !trackedFlight && <EmptyState message="Enable “Live air traffic” in Explore to see aircraft." />}
-        {(trafficMode || trackedFlight) && !traffic && <p className="text-sm text-subtle">Loading live positions…</p>}
+        {!trafficMode && !trackedFlight && (
+          <div>
+            <EmptyState message="See aircraft in the air right now and follow one across the globe." />
+            <button type="button" onClick={() => useMeridianStore.getState().setTrafficMode(true)} className={cn(primaryButtonClass, "mt-1 w-full")}>
+              Show live air traffic
+            </button>
+          </div>
+        )}
+        {(trafficMode || trackedFlight) && !traffic && !trafficError && <SkeletonRows rows={4} label="Loading live positions" />}
+        {(trafficMode || trackedFlight) && !traffic && trafficError && (
+          <ErrorState message="Live positions aren't responding right now. Retrying automatically." />
+        )}
+        {traffic && aircraftCount === 0 && <EmptyState message="No aircraft are reporting positions right now." />}
         {tracked && (
           <div className="mb-2 rounded-xl border border-accent/40 px-3 py-2 text-sm">
             <p className="font-medium">● LIVE · {tracked.callsign}</p>
@@ -132,8 +167,8 @@ export function FlightPanel() {
         <ul className="max-h-64 space-y-1 overflow-y-auto">
           {aircraft.slice(0, 60).map((ac) => (
             <li key={ac.flightId ?? ac.callsign}>
-              <button type="button" onClick={() => track(ac)}
-                className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-left text-sm hover:bg-surface-raised/70">
+              <button type="button" onClick={() => track(ac)} aria-label={`Track ${ac.callsign ?? "aircraft"}`}
+                className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-left text-sm transition-colors duration-150 hover:bg-surface-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
                 <span className="font-medium">{ac.callsign ?? "—"}</span>
                 <span className="flex items-center gap-2 text-xs text-subtle">
                   <span className="tabular-nums">{ac.latitude?.toFixed(1)}°, {ac.longitude?.toFixed(1)}°</span>
@@ -143,7 +178,13 @@ export function FlightPanel() {
             </li>
           ))}
         </ul>
-        {traffic && <SourceLine source="OpenSky" fetchedAt={traffic.fetchedAt} />}
+        {traffic && <SourceLine source="OpenSky Network" fetchedAt={traffic.fetchedAt} />}
+        {trafficMode && !trackedFlight && (
+          <button type="button" onClick={() => useMeridianStore.getState().setTrafficMode(false)}
+            className="mt-2 rounded-lg text-xs text-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+            Hide live air traffic
+          </button>
+        )}
       </Panel>
     </div>
   );

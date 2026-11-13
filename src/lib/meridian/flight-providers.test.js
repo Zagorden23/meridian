@@ -38,4 +38,18 @@ describe("flights", () => {
       assert.equal(cov.pnrLookup.available, false);
     }
   });
+  it("a key alone never claims schedule coverage (no adapter ships yet)", () => {
+    const before = process.env.FLIGHT_API_KEY;
+    process.env.FLIGHT_API_KEY = "test-key";
+    try {
+      const cov = providerCoverage();
+      assert.equal(cov.scheduleSearch.available, false);
+      assert.equal(cov.flightStatus.available, false);
+      assert.equal(cov.airportBoards.available, false);
+      assert.match(cov.scheduleSearch.note, /adapter/);
+    } finally {
+      if (before === undefined) delete process.env.FLIGHT_API_KEY;
+      else process.env.FLIGHT_API_KEY = before;
+    }
+  });
 });

@@ -3,6 +3,7 @@ import { readJson } from "@/lib/meridian/api-route.js";
 import { sendData, sendError } from "@/lib/meridian/auth-route.js";
 import { consumeOtp, requireMongo } from "@/lib/meridian/otp-flow.js";
 import { connectMongo } from "@/lib/meridian/mongo.js";
+import { httpError } from "@/lib/meridian/api-envelope.js";
 import {
   User, createSession, ensureAuthIndexes, normalizePhone,
   publicUser, touchLogin, validateName,
@@ -21,18 +22,19 @@ export const Route = createFileRoute("/api/auth/verify-phone-otp")({
           await ensureAuthIndexes().catch(() => {});
           let user = await User().findOne({ phone }).select("+passwordHash +passwordSalt");
           let created = false;
+          const name = validateName(body.name);
           if (!user) {
             user = await User().create({
               phone, phoneVerified: true,
-              name: validateName(body.name) || null,
+              ...(name ? { name } : {}),
               authProviders: [{ provider: "phone", providerUserId: phone }],
               lastLoginAt: new Date(),
             });
             created = true;
           } else {
+            if (user.accountStatus !== "active") throw httpError(403, "ACCOUNT_DISABLED", "This account is disabled.");
             user.phoneVerified = true;
-            const nm = validateName(body.name);
-            if (nm && !user.name) user.name = nm;
+            if (name && !user.name) user.name = name;
             if (!(user.authProviders ?? []).some((p) => p.provider === "phone")) {
               user.authProviders.push({ provider: "phone", providerUserId: phone });
             }
@@ -41,8 +43,8 @@ export const Route = createFileRoute("/api/auth/verify-phone-otp")({
             await user.save();
           }
           await touchLogin(user._id);
-          const { cookie } = await createSession(user._id, request);
-          return sendData({ user: publicUser(user), created }, { cookies: [cookie] });
+          const { cookie } = await createSession(user._id, request, { method: "phone" });
+          return sendData({ user: publicUser(user), created, method: "phone" }, { cookies: [cookie] });
         } catch (err) { return sendError(err); }
       },
     },

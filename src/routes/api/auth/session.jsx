@@ -8,8 +8,8 @@ export const Route = createFileRoute("/api/auth/session")({
       async GET({ request }) {
         try {
           const sess = await getSessionUser(request);
-          if (!sess) return sendData({ status: "unauthenticated", user: null });
-          return sendData({ status: "authenticated", user: sess.user });
+          if (!sess) return sendData({ status: "unauthenticated", user: null, method: null });
+          return sendData({ status: "authenticated", user: sess.user, method: sess.method });
         } catch (err) { return sendError(err); }
       },
     },

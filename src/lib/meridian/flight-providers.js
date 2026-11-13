@@ -22,25 +22,39 @@ export function unavailable(feature, reason) {
 }
 
 // --- Provider coverage registry ---------------------------------------------
-export function providerCoverage() {
+// Schedule search, flight status and airport boards need a licensed data
+// provider, and no adapter for one ships yet (see searchFlights below). Until
+// one does, those features are reported as unavailable even when
+// FLIGHT_API_KEY is set: a key by itself connects nothing, and claiming
+// "available" for a feature whose every call fails would be a false status.
+const LICENSED_ADAPTER_READY = false;
+
+function licensedCoverage(feature) {
   const key = process.env.FLIGHT_API_KEY;
+  if (LICENSED_ADAPTER_READY && key) {
+    return { available: true, provider: "licensed-schedule", note: "Coverage per provider contract." };
+  }
+  return {
+    available: false,
+    provider: null,
+    note: key
+      ? `FLIGHT_API_KEY is set, but no ${feature} provider adapter is implemented yet.`
+      : `No ${feature} provider configured. Set FLIGHT_API_KEY.`,
+  };
+}
+
+export function providerCoverage() {
   const openskyUser = process.env.OPENSKY_CLIENT_ID;
   return {
-    scheduleSearch: key
-      ? { available: true, provider: "licensed-schedule", note: "Coverage per provider contract." }
-      : { available: false, provider: null, note: "No flight-search provider configured. Set FLIGHT_API_KEY." },
-    flightStatus: key
-      ? { available: true, provider: "licensed-schedule", note: "Coverage per provider contract." }
-      : { available: false, provider: null, note: "No status provider configured. Set FLIGHT_API_KEY." },
+    scheduleSearch: licensedCoverage("flight-search"),
+    flightStatus: licensedCoverage("status"),
     livePositions: {
       available: true,
       provider: "opensky",
       authenticated: Boolean(openskyUser),
       note: "OpenSky community coverage: mainly ADS-B equipped airspace (Europe, North America). No universal tracking claimed.",
     },
-    airportBoards: key
-      ? { available: true, provider: "licensed-schedule", note: "Coverage per provider contract." }
-      : { available: false, provider: null, note: "No board provider configured. Set FLIGHT_API_KEY." },
+    airportBoards: licensedCoverage("board"),
     pnrLookup: { available: false, provider: null, note: "PNR lookup requires an airline/GDS integration. Not configured." },
   };
 }

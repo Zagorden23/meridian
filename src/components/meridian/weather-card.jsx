@@ -11,7 +11,7 @@ function wind(v, units) {
   return units === "imperial" ? `${Math.round(v * 0.621371)} mph` : `${Math.round(v)} km/h`;
 }
 
-export function WeatherCard({ weather, pending, error }) {
+export function WeatherCard({ weather, pending, error, onRetry }) {
   const units = useMeridianStore((s) => s.units);
   if (pending) {
     return (
@@ -22,7 +22,7 @@ export function WeatherCard({ weather, pending, error }) {
       </div>
     );
   }
-  if (error) return <ErrorState message="Weather temporarily unavailable." />;
+  if (error) return <ErrorState message="The weather couldn't be loaded." onRetry={onRetry} />;
   if (!weather) return null;
   return (
     <div>
@@ -55,10 +55,10 @@ export function WeatherCard({ weather, pending, error }) {
   );
 }
 
-export function WeatherPanel({ weather, pending, error, title }) {
+export function WeatherPanel({ weather, pending, error, onRetry, title }) {
   return (
     <Panel kicker="Weather" title={title ?? "Current weather"}>
-      <WeatherCard weather={weather} pending={pending} error={error} />
+      <WeatherCard weather={weather} pending={pending} error={error} onRetry={onRetry} />
     </Panel>
   );
 }

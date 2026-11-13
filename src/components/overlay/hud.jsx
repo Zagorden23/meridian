@@ -20,6 +20,9 @@ export function Hud({ compact = false }) {
   const resumeOrbit = useGlobeStore((state) => state.resumeOrbit);
   const activeModule = useMeridianStore((state) => state.activeModule);
   const sidebarOpen = useMeridianStore((state) => state.sidebarOpen);
+  // A catalog location (search, lists, AI) shows its own card in the same
+  // corner — the invitation and the hint step aside for it.
+  const location = useMeridianStore((state) => state.location);
   // Featured rail only makes sense in Explore with the panel collapsed —
   // when the panel is open the same list is already inside it.
   const showFeatured = activeModule === "explore" && !sidebarOpen;
@@ -43,7 +46,7 @@ export function Hud({ compact = false }) {
   }, [select]);
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-3 md:p-4">
+    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col p-3 pb-[calc(4.25rem+env(safe-area-inset-bottom))] md:p-4 md:pb-14">
       {/* Brand + orbit control: brand only on mobile when no selection;
           desktop keeps it for personality. Hidden once a panel is open. */}
       {!compact && (
@@ -77,6 +80,9 @@ export function Hud({ compact = false }) {
           className={cn(
             "pointer-events-auto max-w-md self-end rounded-3xl bg-surface/90 p-4 text-fg shadow-border",
             !selected && "max-md:hidden",
+            // The invitation is for an empty stage only: not beside an open
+            // section panel, and not under a location card.
+            !selected && (compact || location) && "hidden",
           )}
           aria-live="polite"
         >
@@ -132,7 +138,10 @@ export function Hud({ compact = false }) {
         {showFeatured && (
           <nav
             aria-label="Featured locations"
-            className="pointer-events-auto flex w-full min-h-0 flex-col rounded-3xl bg-surface/90 p-3 shadow-border md:w-80"
+            className={cn(
+              "pointer-events-auto flex w-full min-h-0 flex-col rounded-3xl bg-surface/90 p-3 shadow-border md:ml-auto md:w-80",
+              location && "max-md:hidden",
+            )}
           >
             <div className="mb-2 flex items-center justify-between px-1">
               <p className="text-xs font-medium tracking-label text-muted uppercase">Featured</p>
@@ -166,7 +175,7 @@ export function Hud({ compact = false }) {
         )}
       </div>
 
-      <p className={cn("pointer-events-none mb-10 mt-3 hidden items-center gap-2 text-xs text-subtle", !selected && "md:flex")}>
+      <p className={cn("pointer-events-none mt-3 hidden items-center gap-2 text-xs text-subtle", !selected && !location && !compact && "md:flex")}>
         <MapPin className="size-3.5" aria-hidden />
         Drag to spin · Click a light to travel · Scroll to zoom · ←→↑↓/WASD to fly · [ ] for prev/next
       </p>

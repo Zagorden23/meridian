@@ -1,48 +1,43 @@
-# MERIDIAN on Render — modular monolith: one web service + Postgres.
-# Primary database is MongoDB Atlas (MONGODB_URI from the dashboard);
-# Postgres/PGLite remains as the local/auth fallback when MONGODB_URI is unset.
-# Cron worker runs the idempotent geodata/weather-cache updater nightly.
-services:
-  - type: web
-    name: meridian
-    runtime: node
-    plan: starter
-    buildCommand: npm install && npm run build
-    startCommand: npm start
-    healthCheckPath: /api/health
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: MONGODB_URI
-        sync: false
-      - key: SESSION_SECRET
-        sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: meridian-db
-          property: connectionString
-      - key: WEATHER_PROVIDER
-        value: open-meteo
-      # Optional — set in the dashboard when you buy coverage:
-      # - key: FLIGHT_API_KEY
-      #   sync: false
-      # - key: GOOGLE_MAPS_API_KEY
-      #   sync: false
-      # - key: AI_API_KEY
-      #   sync: false
-
-  - type: cron
-    name: meridian-geodata-sync
-    runtime: node
-    schedule: "0 3 * * *"
-    buildCommand: npm install
-    startCommand: npm run db:update-geodata
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: meridian-db
-          property: connectionString
-
-databases:
-  - name: meridian-db
-    plan: starter
+# MERIDIAN on Render — modular monolith: one web service + Render Postgres.
+# Primary relational geo/travel store is Render Postgres (DATABASE_URL from meridian-db);
+# embedded PGLite serves as the zero-config fallback when DATABASE_URL is unset.
+# Set MONGODB_URI in the Render Dashboard when connecting MongoDB Atlas for accounts/sessions.
+projects:
+  - name: Meridian
+    environments:
+      - name: production
+        services:
+          - type: web
+            name: meridian
+            runtime: node
+            region: oregon
+            plan: free
+            buildCommand: npm ci --include=dev && node scripts/with-app-env.mjs vite build && node scripts/copy-pglite-assets.mjs
+            startCommand: npm run db:migrate && npm run db:import-geodata && npm start
+            healthCheckPath: /api/health
+            envVars:
+              - key: NODE_ENV
+                value: production
+              - key: HOST
+                value: 0.0.0.0
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: meridian-db
+                  property: connectionString
+              - key: SESSION_SECRET
+                generateValue: true
+              - key: WEATHER_PROVIDER
+                value: open-meteo
+              # Optional — set in the Render Dashboard when configuring providers:
+              # - key: MONGODB_URI
+              #   sync: false
+              # - key: FLIGHT_API_KEY
+              #   sync: false
+              # - key: GOOGLE_MAPS_API_KEY
+              #   sync: false
+              # - key: AI_API_KEY
+              #   sync: false
+        databases:
+          - name: meridian-db
+            region: oregon
+            plan: free

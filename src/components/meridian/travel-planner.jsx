@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/meridian/api-client.js";
 import { useMeridianStore } from "@/store/meridian-store.js";
 import { useGlobeStore } from "@/store/globe-store.js";
-import { Panel, ErrorState, EmptyState, SourceLine } from "./ui.jsx";
+import { Panel, ErrorState, EmptyState, inputClass, primaryButtonClass, quietButtonClass } from "./ui.jsx";
 import { cn } from "@/lib/utils";
 
 const STEPS = ["Journey", "Origin", "Destination", "Details", "Results"];
@@ -26,6 +26,7 @@ export function TravelPlanner() {
   const [passengers, setPassengers] = useState(1);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [searching, setSearching] = useState(false);
   const setRoute = useMeridianStore((s) => s.setRoute);
 
   useEffect(() => {
@@ -55,6 +56,7 @@ export function TravelPlanner() {
   const search = async () => {
     setError("");
     setResult(null);
+    setSearching(true);
     try {
       const res = await api.flightsSearch({
         tripType,
@@ -67,10 +69,19 @@ export function TravelPlanner() {
       });
       setResult(res.data);
     } catch (err) {
-      setError(err.message);
-      setResult({ unavailable: true, message: err.message });
+      if (err?.code === "PROVIDER_UNAVAILABLE") {
+        // No schedule source is connected: say so plainly. The route itself
+        // is real and can still be drawn — flights are never made up.
+        setResult({ unavailable: true });
+      } else if (err?.status >= 400 && err?.status < 500) {
+        setError(err.message);
+      } else {
+        setError("Flight search didn't respond. Please try again.");
+      }
+    } finally {
+      setSearching(false);
+      setStep(4);
     }
-    setStep(4);
   };
 
   const viewRoute = () => {
@@ -88,26 +99,34 @@ export function TravelPlanner() {
 
   return (
     <Panel kicker="Travel" title={tripType === "domestic" ? "Domestic flights" : "International flights"}>
-      <ol className="mb-3 flex flex-wrap items-center gap-x-1 gap-y-0.5" aria-label="Travel steps">
-        {STEPS.map((s, i) => (
-          <li key={s} className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => i < 4 && setStep(i)}
-              className={cn("rounded-full px-1.5 py-0.5 text-[10px]", step === i ? "bg-surface-raised text-fg" : "text-subtle")}
-              aria-current={step === i ? "step" : undefined}
-            >
-              {i + 1}. {s}
-            </button>
-          </li>
-        ))}
-      </ol>
+      {/* Progress: where you are, and a way back to any earlier step. */}
+      <div className="mb-3">
+        <p className="text-[11px] text-subtle" aria-live="polite">
+          Step {step + 1} of {STEPS.length} · <span className="text-muted">{STEPS[step]}</span>
+        </p>
+        <ol className="mt-1.5 flex gap-1" aria-label="Travel steps">
+          {STEPS.map((s, i) => (
+            <li key={s} className="flex-1">
+              <button
+                type="button"
+                onClick={() => setStep(i)}
+                disabled={i >= step}
+                aria-label={`${i + 1}. ${s}${i === step ? " (current)" : i < step ? " — go back" : ""}`}
+                aria-current={step === i ? "step" : undefined}
+                className="block w-full rounded-full py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <span className={cn("block h-1 rounded-full transition-colors duration-200", i <= step ? "bg-accent" : "bg-surface-raised")} />
+              </button>
+            </li>
+          ))}
+        </ol>
+      </div>
 
       {step === 0 && (
         <div className="grid grid-cols-2 gap-2">
           {(["domestic", "international"]).map((t) => (
-            <button key={t} type="button" onClick={() => { setTripType(t); setStep(1); }}
-              className={cn("rounded-xl px-3 py-2.5 text-sm font-medium capitalize", tripType === t ? "bg-accent text-accent-fg" : "bg-surface-raised/70 text-muted hover:text-fg")}>
+            <button key={t} type="button" onClick={() => { setTripType(t); setStep(1); }} aria-pressed={tripType === t}
+              className={cn("rounded-xl px-3 py-2.5 text-sm font-medium capitalize transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent", tripType === t ? "bg-accent text-accent-fg" : "bg-surface-raised/70 text-muted hover:text-fg")}>
               {t}
             </button>
           ))}
@@ -117,7 +136,7 @@ export function TravelPlanner() {
       {step === 1 && (
         <div className="space-y-2">
           {tripType === "domestic" ? (
-            <Select label="Country (once)" value={country} onChange={setCountry} options={countries.map((c) => ({ value: c.id, label: `${c.flag ?? ""} ${c.name}` }))} />
+            <Select label="Country" value={country} onChange={setCountry} options={countries.map((c) => ({ value: c.id, label: `${c.flag ?? ""} ${c.name}` }))} />
           ) : (
             <Select label="From country" value={fromCountry} onChange={setFromCountry} options={countries.map((c) => ({ value: c.id, label: `${c.flag ?? ""} ${c.name}` }))} />
           )}
@@ -140,32 +159,35 @@ export function TravelPlanner() {
         <div className="space-y-2">
           <label className="block text-xs text-muted">Travel date
             <input type="date" value={date} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)}
-              className="mt-1 w-full rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-fg outline-none" />
+              className={cn(inputClass, "mt-1")} />
           </label>
           <label className="block text-xs text-muted">Passengers
-            <input type="number" min={1} max={9} value={passengers} onChange={(e) => setPassengers(Number(e.target.value))}
-              className="mt-1 w-full rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-fg outline-none" />
+            <input type="number" min={1} max={9} value={passengers}
+              onChange={(e) => setPassengers(Math.min(9, Math.max(1, Math.round(Number(e.target.value)) || 1)))}
+              className={cn(inputClass, "mt-1")} />
           </label>
-          <Nav onBack={() => setStep(2)} onNext={search} nextLabel="Search" />
+          <Nav onBack={() => setStep(2)} onNext={search} nextDisabled={searching || !date} nextLabel={searching ? "Searching…" : "Search flights"} />
         </div>
       )}
 
       {step === 4 && (
         <div className="space-y-2">
-          {error && <ErrorState message={error} />}
-          {result && !result.unavailable && <EmptyState message="No scheduled results returned for this route." />}
+          <p className="text-sm font-medium">{origin.airport} → {destination.airport}</p>
+          {error && <ErrorState message={error} onRetry={search} />}
           {result?.unavailable && (
-            <p className="text-xs text-subtle">Live schedules need a configured flight provider. Your route is still drawn on the globe below.</p>
+            <p className="text-sm leading-relaxed text-muted">
+              Live schedules aren&apos;t connected yet, so there are no fares or departure times to show for this route. You can still see it on the globe.
+            </p>
           )}
+          {result && !result.unavailable && <EmptyState message="No scheduled flights were returned for this route and date." />}
           {origin.airport && destination.airport && (
-            <button type="button" onClick={viewRoute} className="w-full rounded-xl bg-accent px-3 py-2 text-sm font-medium text-accent-fg">
+            <button type="button" onClick={viewRoute} className={cn(primaryButtonClass, "w-full")}>
               View route on globe
             </button>
           )}
-          <button type="button" onClick={() => setStep(0)} className="w-full rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-muted hover:text-fg">
+          <button type="button" onClick={() => { setStep(0); setResult(null); setError(""); }} className={cn(quietButtonClass, "w-full")}>
             New search
           </button>
-          <SourceLine source="Flight provider" fetchedAt={new Date().toISOString()} />
         </div>
       )}
     </Panel>
@@ -205,8 +227,8 @@ function EndpointForm({ countryId, states, cities, airports, value, onChange }) 
 function Select({ label, value, onChange, options, placeholder }) {
   return (
     <label className="block text-xs text-muted">{label}
-      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}
-        className="mt-1 w-full rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-fg outline-none">
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className={cn(inputClass, "mt-1")}>
         <option value="">{placeholder ?? "Select country"}</option>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
@@ -217,8 +239,8 @@ function Select({ label, value, onChange, options, placeholder }) {
 function Nav({ onBack, onNext, nextDisabled, nextLabel }) {
   return (
     <div className="flex gap-2 pt-1">
-      {onBack && <button type="button" onClick={onBack} className="flex-1 rounded-xl bg-surface-raised/70 px-3 py-2 text-sm text-muted hover:text-fg">Back</button>}
-      {onNext && <button type="button" onClick={onNext} disabled={nextDisabled} className="flex-1 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-40">{nextLabel ?? "Continue"}</button>}
+      {onBack && <button type="button" onClick={onBack} className={cn(quietButtonClass, "flex-1")}>Back</button>}
+      {onNext && <button type="button" onClick={onNext} disabled={nextDisabled} className={cn(primaryButtonClass, "flex-1")}>{nextLabel ?? "Continue"}</button>}
     </div>
   );
 }

@@ -1,7 +1,10 @@
 // MERIDIAN authentication core — server-only, MongoDB/Mongoose only.
-// No SQL, no passwords (OTP + OAuth only), no secrets in the browser.
+// No SQL, no secrets in the browser.
 //
 // Sessions: 256-bit random tokens, sha256-hashed at rest, HttpOnly cookies.
+// Passwords: optional email+password credential, scrypt-hashed with a unique
+//   salt. An address typed at sign-up is unproven until its owner confirms it
+//   (emailed code or a provider that vouches for it) — see claimUnverifiedAccount.
 // OTP: 6-digit codes, scrypt-hashed, 5-minute expiry, 5 attempts max,
 //   60s resend cooldown, hourly request caps. Codes are NEVER logged.
 // OAuth: authorization-code flow for Google / Microsoft / Apple / Amazon with
@@ -22,6 +25,7 @@ import { SignJWT, importPKCS8 } from "jose";
 import { connectMongo } from "./mongo.js";
 import { httpError } from "./api-envelope.js";
 import { verifyIdToken } from "./oidc.js";
+import { safeReturnTo } from "./return-to.js";
 
 function requireSecret() {
   const s = process.env.SESSION_SECRET;
@@ -87,20 +91,36 @@ export const AuthSession = () => model("MeridianSession", new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   expiresAt: { type: Date, required: true, expires: 0 }, // 30-day TTL
   userAgent: String,
+  // How this session was opened: password | email | phone | <oauth provider>.
+  // A session opened by proving the mailbox (email code) may replace a
+  // forgotten password; any other session must present the current one.
+  method: String,
 }, { collection: "authSessions" }));
 
-export async function ensureAuthIndexes() {
-  await connectMongo();
-  const u = User().collection;
-  await u.createIndex({ email: 1 }, { unique: true, sparse: true }).catch(() => {});
-  await u.createIndex({ phone: 1 }, { unique: true, sparse: true }).catch(() => {});
-  // Compound provider index keeps linking possible: uniqueness is per
-  // (provider, providerUserId), never on bare email, so multi-provider
-  // accounts and same-email conflicts stay representable.
-  await u.createIndex(
-    { "authProviders.provider": 1, "authProviders.providerUserId": 1 },
-    { unique: true, sparse: true },
-  ).catch(() => {});
+let authIndexesReady = null;
+
+export function ensureAuthIndexes() {
+  // Once per process: every sign-in used to re-issue three createIndex calls.
+  // A failed attempt is forgotten so the next sign-in retries.
+  if (!authIndexesReady) {
+    authIndexesReady = (async () => {
+      await connectMongo();
+      const u = User().collection;
+      await u.createIndex({ email: 1 }, { unique: true, sparse: true }).catch(() => {});
+      await u.createIndex({ phone: 1 }, { unique: true, sparse: true }).catch(() => {});
+      // Compound provider index keeps linking possible: uniqueness is per
+      // (provider, providerUserId), never on bare email, so multi-provider
+      // accounts and same-email conflicts stay representable.
+      await u.createIndex(
+        { "authProviders.provider": 1, "authProviders.providerUserId": 1 },
+        { unique: true, sparse: true },
+      ).catch(() => {});
+    })().catch((err) => {
+      authIndexesReady = null;
+      throw err;
+    });
+  }
+  return authIndexesReady;
 }
 
 // --- Normalizers / validators -------------------------------------------------
@@ -272,7 +292,7 @@ export function secureContext(request) {
   return isSecureRequest(request);
 }
 
-export async function createSession(userId, request) {
+export async function createSession(userId, request, { method = null } = {}) {
   await connectMongo();
   const token = randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(token).digest("hex");
@@ -281,8 +301,18 @@ export async function createSession(userId, request) {
     userId,
     expiresAt: new Date(Date.now() + SESSION_TTL_MS),
     userAgent: String(request.headers.get("user-agent") ?? "").slice(0, 200),
+    ...(method ? { method: String(method).slice(0, 32) } : {}),
   });
   return { token, cookie: sessionCookie(token, secureContext(request)) };
+}
+
+/** Sign a user out everywhere — optionally sparing the session making the call. */
+export async function revokeUserSessions(userId, { exceptSessionId = null } = {}) {
+  await connectMongo();
+  const filter = { userId };
+  if (exceptSessionId) filter._id = { $ne: exceptSessionId };
+  const res = await AuthSession().deleteMany(filter);
+  return res?.deletedCount ?? 0;
 }
 
 export async function getSessionUser(request) {
@@ -297,7 +327,7 @@ export async function getSessionUser(request) {
   }
   const user = await User().findOne({ _id: sess.userId, accountStatus: "active" }).select("+passwordHash").lean();
   if (!user) return null;
-  return { user: publicUser(user), sessionId: sess._id };
+  return { user: publicUser(user), sessionId: sess._id, method: sess.method ?? null };
 }
 
 export async function destroySession(request) {
@@ -310,11 +340,46 @@ export async function destroySession(request) {
   return clearSessionCookie(secureContext(request));
 }
 
+/**
+ * An address is only owned once its holder proves it — by entering an emailed
+ * code, or through a provider that vouches for it. Anything attached before
+ * that proof (the password chosen at sign-up, a provider linked from that
+ * session) may belong to whoever typed the address first, not to its owner.
+ * So when the owner does prove it, they become the account's sole owner:
+ * every earlier credential is removed and the caller revokes open sessions.
+ * Without this, signing up with someone else's address and waiting for them
+ * to arrive would leave a working back door into their account.
+ *
+ * Mutates `user` (a Mongoose document or a plain object) and reports what went.
+ */
+export function claimUnverifiedAccount(user, proof) {
+  const hadPassword = Boolean(user.passwordHash);
+  const droppedProviders = (user.authProviders ?? [])
+    .filter((p) => !(p.provider === proof.provider && p.providerUserId === proof.providerUserId))
+    .map((p) => p.provider);
+  user.passwordHash = undefined;
+  user.passwordSalt = undefined;
+  user.passwordUpdatedAt = undefined;
+  user.authProviders = [{
+    provider: proof.provider,
+    providerUserId: proof.providerUserId,
+    ...(proof.email ? { email: proof.email } : {}),
+  }];
+  user.emailVerified = true;
+  user.updatedAt = new Date();
+  return { hadPassword, droppedProviders };
+}
+
 export function publicUser(user) {
   if (!user) return null;
+  // Account-level `email` is reserved for addresses that are proven (or that a
+  // password sign-up is still waiting to prove). A provider-asserted address
+  // that nobody verified lives only on its provider entry — shown as contact
+  // detail, never used to match or merge accounts.
+  const providerEmail = (user.authProviders ?? []).find((p) => p.email)?.email ?? null;
   return {
     id: String(user._id),
-    email: user.email ?? null,
+    email: user.email ?? providerEmail,
     emailVerified: Boolean(user.emailVerified),
     emailIsPrivateRelay: Boolean(user.emailIsPrivateRelay),
     phone: user.phone ?? null,
@@ -388,16 +453,9 @@ export function oauthRedirectUri(providerId, origin) {
   return `${origin}/api/auth/${providerId}/callback`;
 }
 
-// Where the user lands after a successful sign-in. Only a same-origin,
-// path-like destination is ever accepted: an absolute or protocol-relative URL
-// arriving from a query string would otherwise turn sign-in into an open
-// redirect, and a backslash would be normalised into a host by some browsers.
-export function safeReturnTo(value, fallback = "/app") {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
-  if (raw.includes("\\") || /[\r\n]/.test(raw)) return fallback;
-  return raw.slice(0, 512);
-}
+// Where the user lands after a successful sign-in — one sanitizer for server
+// and browser alike (see return-to.js).
+export { safeReturnTo };
 
 export function providerStatus() {
   return Object.entries(OAUTH_PROVIDERS).map(([id, p]) => {
@@ -641,33 +699,94 @@ export async function resolveOAuthIdentity(providerId, code, redirectUri, { nonc
 }
 
 // --- Account resolution + safe linking ----------------------------------------
-// Never auto-merge on bare email: a verified-email match to an existing
-// account requires the user to sign in first, then link explicitly.
-export async function resolveOAuthAccount(identity, providerId, sessionUserId = null) {
-  await connectMongo();
-  await ensureAuthIndexes().catch(() => {});
-  const byProvider = await User().findOne({
-    "authProviders.provider": providerId,
-    "authProviders.providerUserId": identity.providerUserId,
-  });
+const APPLE_RELAY = /@privaterelay\.appleid\.com$/i;
+
+/**
+ * Decide what a provider identity means for our accounts. Pure — the caller
+ * supplies the lookups — so every branch is unit-tested without a database.
+ *
+ *   signin  the identity is already linked to an account
+ *   link    a signed-in user is attaching it to their own account
+ *   claim   its verified address matches an account nobody ever proved
+ *   create  first time we see it
+ *
+ * Accounts are never merged on a bare address: a match against an account
+ * whose address IS proven requires signing in there and linking explicitly.
+ */
+export function planOAuthAccount({
+  providerId, intent = "login", sessionUserId = null, byProvider = null, me = null, byEmail = null,
+}) {
+  const label = OAUTH_PROVIDERS[providerId]?.label ?? "provider";
+  if (intent === "link" && !sessionUserId) {
+    // A link whose session lapsed mid-flow must not quietly turn into a
+    // sign-in to — or the creation of — some other account.
+    throw httpError(401, "SESSION_REQUIRED", "Sign in first, then link this provider.");
+  }
   if (byProvider) {
-    if (byProvider.accountStatus !== "active") throw httpError(403, "ACCOUNT_DISABLED", "This account is disabled.");
-    // Link flow must never silently switch to a DIFFERENT account that already
-    // owns this provider — that would hand the session to someone else's user.
+    if (byProvider.accountStatus && byProvider.accountStatus !== "active") {
+      throw httpError(403, "ACCOUNT_DISABLED", "This account is disabled.");
+    }
+    // Linking must never switch to a DIFFERENT account that already owns this
+    // identity — that would hand the session to someone else's user.
     if (sessionUserId && String(byProvider._id) !== String(sessionUserId)) {
       throw httpError(409, "ACCOUNT_LINK_CONFLICT",
-        "This provider is already linked to another account. Sign in with it directly instead.");
+        `This ${label} account is already linked to another Meridian account. Sign in with it directly instead.`);
     }
-    return { user: byProvider, created: false };
+    return { action: "signin" };
   }
-  if (sessionUserId && identity.email) {
-    // Explicit link flow: authenticated user attaching a new provider.
-    const me = await User().findById(sessionUserId);
-    if (!me) throw httpError(401, "SESSION_REQUIRED", "Sign in first.");
-    me.authProviders.push({ provider: providerId, providerUserId: identity.providerUserId, email: identity.email });
-    if (identity.emailVerified && !me.email) {
-      me.email = identity.email;
+  if (sessionUserId) {
+    if (!me) throw httpError(401, "SESSION_REQUIRED", "Sign in first, then link this provider.");
+    if ((me.authProviders ?? []).some((p) => p.provider === providerId)) {
+      throw httpError(409, "PROVIDER_ALREADY_LINKED",
+        `A different ${label} account is already linked. Disconnect it first.`);
+    }
+    return { action: "link" };
+  }
+  if (byEmail) {
+    if (byEmail.accountStatus && byEmail.accountStatus !== "active") {
+      throw httpError(403, "ACCOUNT_DISABLED", "This account is disabled.");
+    }
+    if (byEmail.emailVerified) {
+      throw httpError(409, "ACCOUNT_LINK_REQUIRED",
+        "An account already exists with this email. Sign in using the existing method, then link this provider from Settings.");
+    }
+    return { action: "claim" };
+  }
+  return { action: "create" };
+}
+
+export async function resolveOAuthAccount(identity, providerId, { sessionUserId = null, intent = "login" } = {}) {
+  await connectMongo();
+  await ensureAuthIndexes().catch(() => {});
+  const email = identity.email ? String(identity.email).trim().toLowerCase() : null;
+  // Only an address the provider vouches for may match or seed an account.
+  const verifiedEmail = email && identity.emailVerified ? email : null;
+  const byProvider = await User().findOne({
+    authProviders: { $elemMatch: { provider: providerId, providerUserId: identity.providerUserId } },
+  });
+  const me = sessionUserId && !byProvider ? await User().findById(sessionUserId) : null;
+  const byEmail = !byProvider && !sessionUserId && verifiedEmail
+    ? await User().findOne({ email: verifiedEmail }).select("+passwordHash +passwordSalt")
+    : null;
+  const plan = planOAuthAccount({ providerId, intent, sessionUserId, byProvider, me, byEmail });
+  const entry = { provider: providerId, providerUserId: identity.providerUserId, ...(email ? { email } : {}) };
+
+  if (plan.action === "signin") return { user: byProvider, created: false };
+
+  if (plan.action === "link") {
+    me.authProviders.push(entry);
+    if (verifiedEmail && me.email === verifiedEmail) {
+      // The session holder also controls a provider that vouches for the
+      // address they signed up with — that proves it.
       me.emailVerified = true;
+    } else if (verifiedEmail && !me.email) {
+      // Adopt the proven address unless another account already holds it.
+      const taken = await User().exists({ email: verifiedEmail, _id: { $ne: me._id } });
+      if (!taken) {
+        me.email = verifiedEmail;
+        me.emailVerified = true;
+        me.emailIsPrivateRelay = APPLE_RELAY.test(verifiedEmail);
+      }
     }
     if (identity.name && !me.name) me.name = identity.name;
     if (identity.avatar && !me.avatar) me.avatar = identity.avatar;
@@ -675,26 +794,25 @@ export async function resolveOAuthAccount(identity, providerId, sessionUserId = 
     await me.save();
     return { user: me, created: false, linked: true };
   }
-  const email = identity.email ? String(identity.email).toLowerCase() : null;
-  if (email && identity.emailVerified) {
-    const byEmail = await User().findOne({ email });
-    if (byEmail && !(byEmail.authProviders ?? []).some((p) => p.provider === providerId)) {
-      throw httpError(409, "ACCOUNT_LINK_REQUIRED",
-        "An account already exists with this email. Sign in using the existing method, then link this provider from your profile.");
-    }
-    if (byEmail) {
-      byEmail.authProviders.push({ provider: providerId, providerUserId: identity.providerUserId, email });
-      byEmail.updatedAt = new Date();
-      await byEmail.save();
-      return { user: byEmail, created: false };
-    }
+
+  if (plan.action === "claim") {
+    claimUnverifiedAccount(byEmail, { provider: providerId, providerUserId: identity.providerUserId, email: verifiedEmail });
+    if (identity.name && !byEmail.name) byEmail.name = identity.name;
+    if (identity.avatar && !byEmail.avatar) byEmail.avatar = identity.avatar;
+    await byEmail.save();
+    await revokeUserSessions(byEmail._id);
+    return { user: byEmail, created: false, claimed: true };
   }
+
+  // Unique fields are omitted — never stored as null — when absent, so the
+  // sparse unique indexes keep ignoring accounts without an address.
   const user = await User().create({
-    email,
-    emailVerified: Boolean(email && identity.emailVerified),
-    name: identity.name,
-    avatar: identity.avatar,
-    authProviders: [{ provider: providerId, providerUserId: identity.providerUserId, email }],
+    ...(verifiedEmail
+      ? { email: verifiedEmail, emailVerified: true, emailIsPrivateRelay: APPLE_RELAY.test(verifiedEmail) }
+      : {}),
+    ...(identity.name ? { name: identity.name } : {}),
+    ...(identity.avatar ? { avatar: identity.avatar } : {}),
+    authProviders: [entry],
     lastLoginAt: new Date(),
   });
   return { user, created: true };

@@ -19,6 +19,9 @@ function readGuestId() {
 export const useAuthStore = create((set, get) => ({
   status: "UNAUTHENTICATED", // + AUTHENTICATING AUTHENTICATED GUEST SESSION_EXPIRED AUTH_ERROR
   user: null,
+  // How the current session was opened (password | email | phone | provider id).
+  // Settings uses it to know whether a forgotten password can be replaced.
+  sessionMethod: null,
   guestSessionId: null,
   error: null,
   initialized: false,
@@ -29,7 +32,7 @@ export const useAuthStore = create((set, get) => ({
     try {
       const res = await api.session();
       if (res.data?.status === "authenticated" && res.data.user) {
-        set({ status: "AUTHENTICATED", user: res.data.user, guestSessionId: null, initialized: true });
+        set({ status: "AUTHENTICATED", user: res.data.user, sessionMethod: res.data.method ?? null, guestSessionId: null, initialized: true });
         try { sessionStorage.removeItem(GUEST_KEY); } catch { /* noop */ }
         return;
       }
@@ -41,6 +44,7 @@ export const useAuthStore = create((set, get) => ({
       status: gid ? "GUEST" : "UNAUTHENTICATED",
       guestSessionId: gid,
       user: null,
+      sessionMethod: null,
       initialized: true,
     });
   },
@@ -53,22 +57,25 @@ export const useAuthStore = create((set, get) => ({
         : `guest-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
       try { sessionStorage.setItem(GUEST_KEY, gid); } catch { /* noop */ }
     }
-    set({ status: "GUEST", guestSessionId: gid, user: null, error: null, initialized: true });
+    set({ status: "GUEST", guestSessionId: gid, user: null, sessionMethod: null, error: null, initialized: true });
   },
 
-  setAuthenticated: (user) => {
+  setAuthenticated: (user, method = null) => {
     try { sessionStorage.removeItem(GUEST_KEY); } catch { /* noop */ }
-    set({ status: "AUTHENTICATED", user, guestSessionId: null, error: null, initialized: true });
+    set({ status: "AUTHENTICATED", user, sessionMethod: method, guestSessionId: null, error: null, initialized: true });
   },
 
-  sessionExpired: () => set({ status: "SESSION_EXPIRED", user: null, error: null }),
+  // Same session, fresher profile (provider linked/unlinked, password changed).
+  updateUser: (user) => set((s) => (s.status === "AUTHENTICATED" ? { user } : s)),
+
+  sessionExpired: () => set({ status: "SESSION_EXPIRED", user: null, sessionMethod: null, error: null }),
 
   authError: (error) => set({ status: "AUTH_ERROR", error }),
 
   signOut: async () => {
     try { await api.logout(); } catch { /* cookie may already be gone */ }
     try { sessionStorage.removeItem(GUEST_KEY); } catch { /* noop */ }
-    set({ status: "UNAUTHENTICATED", user: null, guestSessionId: null, error: null, initialized: true });
+    set({ status: "UNAUTHENTICATED", user: null, sessionMethod: null, guestSessionId: null, error: null, initialized: true });
   },
 
   exitGuest: () => {

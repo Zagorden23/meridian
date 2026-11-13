@@ -16,25 +16,49 @@ async function req(path, { method = "GET", body, signal } = {}) {
   return json;
 }
 
+// Several panels ask for the same catalog data (countries, airports, the
+// weather of the selected place). Identical reads share one request and a short
+// cache instead of each panel hitting the network; a failed read is forgotten
+// so the next caller retries.
+const shared = new Map();
+function cached(path, ttlMs) {
+  const hit = shared.get(path);
+  if (hit && hit.expires > Date.now()) return hit.promise;
+  const promise = req(path).catch((err) => {
+    shared.delete(path);
+    throw err;
+  });
+  if (shared.size >= 200) {
+    // Bounded: drop what has expired, then the oldest entry if still full.
+    const now = Date.now();
+    for (const [key, entry] of shared) if (entry.expires <= now) shared.delete(key);
+    if (shared.size >= 200) shared.delete(shared.keys().next().value);
+  }
+  shared.set(path, { promise, expires: Date.now() + ttlMs });
+  return promise;
+}
+const CATALOG_TTL = 5 * 60 * 1000;
+const WEATHER_TTL = 60 * 1000;
+
 export const api = {
   health: () => req("/api/health"),
   providers: () => req("/api/providers/health"),
-  countries: () => req("/api/countries"),
+  countries: () => cached("/api/countries", CATALOG_TTL),
   country: (id) => req(`/api/countries/${encodeURIComponent(id)}`),
   countryStates: (id) => req(`/api/countries/${encodeURIComponent(id)}/states`),
   countryCities: (id) => req(`/api/countries/${encodeURIComponent(id)}/cities`),
-  capitals: () => req("/api/capitals"),
+  capitals: () => cached("/api/capitals", CATALOG_TTL),
   search: (q, signal) => req(`/api/locations/search?q=${encodeURIComponent(q)}`, { signal }),
   nearby: (lat, lon, radiusKm) =>
     req(`/api/locations/nearby?lat=${lat}&lon=${lon}&radiusKm=${radiusKm ?? 100}`),
   reverse: (lat, lon) => req(`/api/locations/reverse?lat=${lat}&lon=${lon}`),
-  weather: (lat, lon, signal) => req(`/api/weather?lat=${lat}&lon=${lon}`, { signal }),
+  weather: (lat, lon) => cached(`/api/weather?lat=${lat}&lon=${lon}`, WEATHER_TTL),
   airports: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return req(`/api/airports${qs ? `?${qs}` : ""}`);
+    return cached(`/api/airports${qs ? `?${qs}` : ""}`, CATALOG_TTL);
   },
   airport: (id) => req(`/api/airports/${encodeURIComponent(id)}`),
-  airlines: () => req("/api/airlines"),
+  airlines: () => cached("/api/airlines", CATALOG_TTL),
   airline: (id) => req(`/api/airlines/${encodeURIComponent(id)}`),
   timezone: (lat, lon, tz) =>
     req(`/api/timezone?lat=${lat}&lon=${lon}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`),
@@ -53,6 +77,7 @@ export const api = {
   verifyEmailOtp: (email, code, name) => req("/api/auth/verify-email-otp", { method: "POST", body: { email, code, name } }),
   requestPhoneOtp: (phone, countryCode) => req("/api/auth/request-phone-otp", { method: "POST", body: { phone, countryCode } }),
   verifyPhoneOtp: (phone, countryCode, code, name) => req("/api/auth/verify-phone-otp", { method: "POST", body: { phone, countryCode, code, name } }),
+  setPassword: (currentPassword, newPassword) => req("/api/auth/password", { method: "POST", body: { currentPassword, newPassword } }),
   logout: () => req("/api/auth/logout", { method: "POST" }),
   unlinkProvider: (provider) => req("/api/auth/unlink-provider", { method: "POST", body: { provider } }),
   savedList: () => req("/api/saved/locations"),

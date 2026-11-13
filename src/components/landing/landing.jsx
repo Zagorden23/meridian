@@ -1,7 +1,7 @@
 // MERIDIAN landing — cinematic observatory entry. Dark, quiet, globe-led.
 // Sections: hero (wordmark + orbital Earth + CTAs), capabilities, flight
 // intelligence (illustrative arc), explore strip, AI concept, final CTA.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Compass, CloudSun, Plane, Map as MapIcon, Bot, Radar, ArrowRight, UserRound,
@@ -102,6 +102,9 @@ export function Landing() {
   const init = useAuthStore((s) => s.init);
 
   useEffect(() => { init(); }, [init]);
+  const scroller = useRef(null);
+  const signIn = () => navigate({ to: "/auth" });
+  const signUp = () => navigate({ to: "/auth", search: { mode: "signup" } });
 
   const inApp = status === "AUTHENTICATED" || status === "GUEST";
   const guest = () => {
@@ -110,12 +113,16 @@ export function Landing() {
   };
 
   return (
-  <div className="min-h-dvh overflow-y-auto bg-bg text-fg">
+  // `body` never scrolls (the app shell is a fixed viewport), so this page is
+  // its own scroll container — with min-height alone nothing below the hero
+  // could be reached.
+  <div ref={scroller} className="h-dvh overflow-y-auto overscroll-contain bg-bg text-fg">
     {/* Persistent minimal nav — brand left, entry actions right. */}
     <nav aria-label="Primary" className="fixed inset-x-0 top-0 z-40 border-b border-border/40 bg-bg/70 backdrop-blur-md">
       <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
-        <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-          className="font-display text-lg italic text-fg">
+        <button type="button" onClick={() => scroller.current?.scrollTo({ top: 0, behavior: "smooth" })}
+          aria-label="Meridian — back to top"
+          className="font-display rounded text-lg italic text-fg">
           Meridian
         </button>
         <div className="flex items-center gap-2">
@@ -130,11 +137,11 @@ export function Landing() {
                 className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
                 Guest
               </button>
-              <button type="button" onClick={() => navigate({ to: "/auth?mode=signup" })}
+              <button type="button" onClick={signUp}
                 className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
                 Create account
               </button>
-              <button type="button" onClick={() => navigate({ to: "/auth" })}
+              <button type="button" onClick={signIn}
                 className="rounded-full bg-accent px-4 py-1.5 text-xs font-semibold uppercase tracking-label text-accent-fg">
                 Sign in
               </button>
@@ -239,11 +246,11 @@ export function Landing() {
       <section aria-label="Begin" className="mx-auto max-w-3xl px-6 py-20 text-center">
         <h2 className="font-display text-4xl italic">Begin your journey.</h2>
         <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <button type="button" onClick={() => navigate({ to: "/auth" })}
+          <button type="button" onClick={signIn}
             className="rounded-full bg-accent px-7 py-3 text-sm font-semibold uppercase tracking-label text-accent-fg">
             Sign in
           </button>
-          <button type="button" onClick={() => navigate({ to: "/auth?mode=signup" })}
+          <button type="button" onClick={signUp}
             className="rounded-full border border-border px-7 py-3 text-sm font-medium uppercase tracking-label text-muted hover:text-fg">
             Create account
           </button>

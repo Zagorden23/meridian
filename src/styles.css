@@ -57,6 +57,13 @@
     cursor: pointer;
   }
 
+  /* Every interactive control shows where keyboard focus is. Components that
+     draw their own ring opt out with `focus-visible:outline-none`. */
+  :where(a, button, input, select, textarea, summary, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
   h1,
   h2,
   h3 {
@@ -76,6 +83,12 @@
   );
 }
 
+/* Keep the 2D Leaflet zoom control clear of the top search/account bar. */
+.leaflet-top.leaflet-right .leaflet-control-zoom {
+  margin-top: 4.25rem;
+  margin-right: 0.75rem;
+}
+
 @keyframes enter {
   from {
     opacity: 0;
@@ -90,7 +103,31 @@
 }
 
 .animate-enter {
-  animation: enter var(--motion-slow) var(--ease-out) both;
+  animation: enter var(--motion-fast) var(--ease-out) both;
+}
+
+/* Bottom sheet (mobile section panel): rises from the navigation bar. */
+@keyframes sheet {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-sheet {
+  animation: sheet var(--motion-fast) var(--ease-out) both;
+}
+
+/* Hide scrollbars on horizontally scrolling rails (still scrollable). */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Shimmer placeholder for loading panels — never a blank screen. */
@@ -115,7 +152,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-enter {
+  /* Motion is decoration here, never information: with the preference set,
+     everything settles instantly — entrances, transitions and smooth scroll. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-enter,
+  .animate-sheet {
     animation: none;
   }
   .skeleton {

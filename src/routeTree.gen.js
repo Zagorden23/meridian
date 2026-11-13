@@ -25,6 +25,7 @@ import { Route as ApiAirlinesIdRouteImport } from './routes/api/airlines/$id'
 import { Route as ApiAirportsIdRouteImport } from './routes/api/airports/$id'
 import { Route as ApiAuthProviderRouteImport } from './routes/api/auth/$provider'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
+import { Route as ApiAuthPasswordRouteImport } from './routes/api/auth/password'
 import { Route as ApiAuthProvidersRouteImport } from './routes/api/auth/providers'
 import { Route as ApiAuthRequestEmailOtpRouteImport } from './routes/api/auth/request-email-otp'
 import { Route as ApiAuthRequestPhoneOtpRouteImport } from './routes/api/auth/request-phone-otp'
@@ -127,6 +128,11 @@ const ApiAuthProviderRoute = ApiAuthProviderRouteImport.update({
 const ApiAuthLogoutRoute = ApiAuthLogoutRouteImport.update({
   id: '/api/auth/logout',
   path: '/api/auth/logout',
+  getParentRoute: () => rootRouteImport,
+})
+const ApiAuthPasswordRoute = ApiAuthPasswordRouteImport.update({
+  id: '/api/auth/password',
+  path: '/api/auth/password',
   getParentRoute: () => rootRouteImport,
 })
 const ApiAuthProvidersRoute = ApiAuthProvidersRouteImport.update({
@@ -308,6 +314,7 @@ const rootRouteChildren = {
   ApiAiChatRoute: ApiAiChatRoute,
   ApiAuthProviderRoute: ApiAuthProviderRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
+  ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthRequestEmailOtpRoute: ApiAuthRequestEmailOtpRoute,
   ApiAuthRequestPhoneOtpRoute: ApiAuthRequestPhoneOtpRoute,

@@ -44,7 +44,7 @@ function routeTreeJsSanitizer() {
     name: "app:route-tree-js",
     enforce: "pre",
     transform(code, id) {
-      const path = id.split("?")[0];
+      const path = id.split("?")[0].replace(/\\/g, "/");
       if (!path.endsWith(ROUTE_TREE_ID_SUFFIX)) return undefined;
       const clean = stripRouteTreeTs(code);
       return clean === code ? undefined : { code: clean };
@@ -176,6 +176,9 @@ export default defineConfig(({ command, isPreview }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    watch: {
+      ignored: ["**/.output/**", "**/.vercel/**", "**/dist/**"],
+    },
   },
   preview: {
     host: "127.0.0.1",

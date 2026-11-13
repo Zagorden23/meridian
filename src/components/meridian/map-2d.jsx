@@ -96,9 +96,10 @@ export function Map2D() {
         shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
       const loc = latest.current.location;
-      const map = L.map(containerRef.current, { zoomControl: true, attributionControl: true }).setView(
+      const map = L.map(containerRef.current, { zoomControl: false, attributionControl: true }).setView(
         loc?.lat != null ? [loc.lat, loc.lon] : [20, 10], loc?.lat != null ? 4 : 2,
       );
+      L.control.zoom({ position: "topright" }).addTo(map);
       L.tileLayer(TILES, { attribution: ATTRIBUTION, maxZoom: 16 }).addTo(map);
       adapter = new LeafletMapAdapter(L, map);
       adapterRef.current = adapter;
@@ -180,7 +181,7 @@ export function Map2D() {
   }, [trackedFlight?.position?.latitude, trackedFlight?.position?.longitude, trackedFlight?.callsign]); // eslint-disable-line
 
   return (
-    <div className="absolute inset-0 bg-[#0a0d14]" aria-label="2D map">
+    <div className="isolate z-0 absolute inset-0 bg-[#0a0d14]" aria-label="2D map">
       <div ref={containerRef} className="h-full w-full" style={{ background: "#0a0d14" }} />
       <div className="pointer-events-none absolute bottom-4 left-1/2 z-[500] -translate-x-1/2 rounded-full bg-surface/85 px-3 py-1 text-[11px] text-subtle backdrop-blur-md">
         Real tiles · Esri / OpenStreetMap · Click for nearest city
