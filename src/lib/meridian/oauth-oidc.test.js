@@ -383,4 +383,41 @@ describe("OAuth sign-in against stand-in OpenID providers", () => {
     assert.throws(() => auth.openOAuthState("missing-signature"), (err) => err?.code === "OAUTH_STATE_INVALID");
     assert.equal(auth.openOAuthState(sealed).provider, "google");
   });
+
+  it("trims whitespace around Google OAuth credentials and rejects blank values", async () => {
+    const prevId = process.env.GOOGLE_CLIENT_ID;
+    const prevSecret = process.env.GOOGLE_CLIENT_SECRET;
+    try {
+      process.env.GOOGLE_CLIENT_ID = "   \n  ";
+      process.env.GOOGLE_CLIENT_SECRET = "  ";
+      const blank = auth.providerStatus().find((p) => p.id === "google");
+      assert.equal(blank.configured, false);
+      assert.deepEqual(blank.missing, ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]);
+
+      process.env.GOOGLE_CLIENT_ID = `  ${ENV.GOOGLE_CLIENT_ID}\n`;
+      process.env.GOOGLE_CLIENT_SECRET = ` ${ENV.GOOGLE_CLIENT_SECRET} `;
+      const padded = auth.providerStatus().find((p) => p.id === "google");
+      assert.equal(padded.configured, true);
+
+      const { params, state } = begin("google", "/app");
+      assert.equal(params.get("client_id"), ENV.GOOGLE_CLIENT_ID);
+
+      nextIdToken = await mintIdToken("google", {
+        iss: "https://accounts.google.com",
+        aud: ENV.GOOGLE_CLIENT_ID,
+        sub: "google-user-trimmed",
+        email: "trimmed@example.com",
+        email_verified: true,
+        name: "Trimmed User",
+        nonce: state.nonce,
+      });
+      const identity = await finish("google", state);
+      assert.equal(identity.providerUserId, "google-user-trimmed");
+      assert.equal(lastTokenRequest.params.get("client_id"), ENV.GOOGLE_CLIENT_ID);
+      assert.equal(lastTokenRequest.params.get("client_secret"), ENV.GOOGLE_CLIENT_SECRET);
+    } finally {
+      process.env.GOOGLE_CLIENT_ID = prevId;
+      process.env.GOOGLE_CLIENT_SECRET = prevSecret;
+    }
+  });
 });

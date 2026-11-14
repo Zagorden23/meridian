@@ -613,9 +613,13 @@ const CALLBACK_ENV = {
   amazon: "AMAZON_CALLBACK_URL",
 };
 
+function oauthEnv(name) {
+  return String(process.env[name] ?? "").trim();
+}
+
 export function oauthRedirectUri(providerId, origin) {
-  const configured = process.env[CALLBACK_ENV[providerId]];
-  if (configured && String(configured).trim()) return String(configured).trim();
+  const configured = oauthEnv(CALLBACK_ENV[providerId]);
+  if (configured) return configured;
   return `${origin}/api/auth/${providerId}/callback`;
 }
 
@@ -625,12 +629,12 @@ export function providerStatus() {
   loadLocalEnv();
   return Object.entries(OAUTH_PROVIDERS).map(([id, p]) => {
     const missing = [];
-    if (!process.env[p.idEnv]) missing.push(p.idEnv);
+    if (!oauthEnv(p.idEnv)) missing.push(p.idEnv);
     if (id === "apple") {
-      if (!process.env.APPLE_TEAM_ID) missing.push("APPLE_TEAM_ID");
-      if (!process.env.APPLE_KEY_ID) missing.push("APPLE_KEY_ID");
-      if (!process.env.APPLE_PRIVATE_KEY) missing.push("APPLE_PRIVATE_KEY");
-    } else if (p.secretEnv && !process.env[p.secretEnv]) missing.push(p.secretEnv);
+      if (!oauthEnv("APPLE_TEAM_ID")) missing.push("APPLE_TEAM_ID");
+      if (!oauthEnv("APPLE_KEY_ID")) missing.push("APPLE_KEY_ID");
+      if (!oauthEnv("APPLE_PRIVATE_KEY")) missing.push("APPLE_PRIVATE_KEY");
+    } else if (p.secretEnv && !oauthEnv(p.secretEnv)) missing.push(p.secretEnv);
     return { id, label: p.label, configured: missing.length === 0, missing };
   });
 }
@@ -689,7 +693,7 @@ export function startOAuthUrl(providerId, origin, intent = "login", returnTo = "
     returnTo: safeReturnTo(returnTo),
   });
   const redirectUri = oauthRedirectUri(providerId, origin);
-  const clientId = process.env[cfg.idEnv];
+  const clientId = oauthEnv(cfg.idEnv);
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -718,13 +722,13 @@ async function exchangeCode(providerId, code, redirectUri, codeVerifier = null) 
     grant_type: "authorization_code",
     code,
     redirect_uri: redirectUri,
-    client_id: process.env[cfg.idEnv],
+    client_id: oauthEnv(cfg.idEnv),
   });
   if (codeVerifier) body.set("code_verifier", codeVerifier);
   if (providerId === "apple") {
     body.set("client_secret", await appleClientSecret());
   } else {
-    body.set("client_secret", process.env[cfg.secretEnv]);
+    body.set("client_secret", oauthEnv(cfg.secretEnv));
   }
   let res;
   try {
@@ -758,16 +762,16 @@ async function exchangeCode(providerId, code, redirectUri, codeVerifier = null) 
 }
 
 function applePrivateKey() {
-  const raw = process.env.APPLE_PRIVATE_KEY;
+  const raw = oauthEnv("APPLE_PRIVATE_KEY");
   if (!raw) throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", "Apple sign-in is not configured.");
-  const cleaned = raw.trim().replace(/^["']|["']$/g, "");
+  const cleaned = raw.replace(/^["']|["']$/g, "").trim();
   return cleaned.includes("\\n") ? cleaned.replace(/\\n/g, "\n") : cleaned;
 }
 
 export async function appleClientSecret() {
-  const teamId = process.env.APPLE_TEAM_ID;
-  const keyId = process.env.APPLE_KEY_ID;
-  const clientId = process.env.APPLE_CLIENT_ID;
+  const teamId = oauthEnv("APPLE_TEAM_ID");
+  const keyId = oauthEnv("APPLE_KEY_ID");
+  const clientId = oauthEnv("APPLE_CLIENT_ID");
   if (!teamId || !keyId || !clientId) {
     throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", "Apple sign-in is not configured.");
   }

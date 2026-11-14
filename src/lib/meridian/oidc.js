@@ -124,7 +124,7 @@ export async function verifyIdToken(providerId, idToken, { nonce } = {}) {
   let claims;
   if (providerId === "google" || providerId === "apple") {
     const cfg = providerId === "google" ? GOOGLE : APPLE;
-    const clientId = process.env[cfg.clientIdEnv];
+    const clientId = String(process.env[cfg.clientIdEnv] ?? "").trim();
     if (!clientId) throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", `${cfg.label} sign-in is not configured.`);
     try {
       ({ payload: claims } = await jwtVerify(token, keySet(cfg.jwks), {
@@ -137,7 +137,7 @@ export async function verifyIdToken(providerId, idToken, { nonce } = {}) {
       throw verifyFailed(cfg.label);
     }
   } else if (providerId === "microsoft") {
-    const clientId = process.env.MICROSOFT_CLIENT_ID;
+    const clientId = String(process.env.MICROSOFT_CLIENT_ID ?? "").trim();
     if (!clientId) throw httpError(503, "OAUTH_PROVIDER_UNCONFIGURED", "Microsoft sign-in is not configured.");
     const meta = await microsoftMeta();
     try {
