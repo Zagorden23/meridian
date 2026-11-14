@@ -26,14 +26,28 @@ class LeafletMapAdapter {
     this.trackLayer = null;
   }
   create() { return this; }
-  destroy() { this.map.remove(); }
-  resize() { this.map.invalidateSize(); }
-  setCenter(lat, lon, zoom) {
-    this.map.setView([lat, lon], zoom ?? this.map.getZoom());
+  destroy() {
+    try {
+      this.map.stop();
+      this.map.off();
+      this.map.remove();
+    } catch {
+      // Ignore teardown races if unmounted during a pan/zoom frame
+    }
   }
-  setZoom(zoom) { this.map.setZoom(zoom); }
-  flyTo(lat, lon, zoom = 5) { this.map.flyTo([lat, lon], zoom, { duration: 1.2 }); }
-  fitBounds(bounds) { this.map.fitBounds(bounds, { padding: [40, 40] }); }
+  resize() { this.map.invalidateSize({ animate: false }); }
+  setCenter(lat, lon, zoom) {
+    this.map.setView([lat, lon], zoom ?? this.map.getZoom(), { animate: false });
+  }
+  setZoom(zoom) { this.map.setZoom(zoom, { animate: false }); }
+  flyTo(lat, lon, zoom = 5) {
+    if (!this.map?._loaded || !this.map?._mapPane) return;
+    this.map.setView([lat, lon], zoom, { animate: false });
+  }
+  fitBounds(bounds) {
+    if (!this.map?._loaded || !this.map?._mapPane) return;
+    this.map.fitBounds(bounds, { padding: [40, 40], animate: false });
+  }
   setMarkers(list) {
     this.removeMarkers();
     for (const m of list) {
@@ -96,7 +110,13 @@ export function Map2D() {
         shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
       });
       const loc = latest.current.location;
-      const map = L.map(containerRef.current, { zoomControl: false, attributionControl: true }).setView(
+      const map = L.map(containerRef.current, {
+        zoomControl: false,
+        attributionControl: true,
+        zoomAnimation: false,
+        fadeAnimation: false,
+        markerZoomAnimation: false,
+      }).setView(
         loc?.lat != null ? [loc.lat, loc.lon] : [20, 10], loc?.lat != null ? 4 : 2,
       );
       L.control.zoom({ position: "topright" }).addTo(map);
@@ -108,7 +128,7 @@ export function Map2D() {
       map.on("click", async (e) => {
         try {
           const res = await api.reverse(e.latlng.lat, e.latlng.lng);
-          const city = res.data?.city;
+          const city = res.data?.city ?? res.data?.nearestCity;
           if (city) {
             const locSel = { kind: "CITY", id: city.id, name: city.name, lat: city.latitude, lon: city.longitude, raw: city };
             selectLocation(locSel);
@@ -124,8 +144,9 @@ export function Map2D() {
         if (alive) adapter.setMarkers(res.data ?? []);
       } catch { /* markers optional */ }
       // Restore shared state on creation.
-      if (latest.current.route) adapter.setRoute(latest.current.route);
-      if (latest.current.location?.lat != null) {
+      if (latest.current.route) {
+        adapter.setRoute(latest.current.route);
+      } else if (latest.current.location?.lat != null) {
         adapter.flyTo(latest.current.location.lat, latest.current.location.lon, 4);
       }
       const onResize = () => adapter.resize();

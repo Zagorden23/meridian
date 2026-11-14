@@ -630,6 +630,7 @@ export async function reverseGeocode(lat, lon) {
     : null;
 
   return {
+    city: nearestCity,
     nearestCity,
     nearestAirport: enrichedAirport,
     coordinates: { lat, lon },

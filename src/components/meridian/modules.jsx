@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/meridian/api-client.js";
+import { distanceKm, bearingDeg } from "@/lib/meridian/geo-math.js";
 import { apiErrorMessage, authErrorMessage, PROVIDER_LABEL } from "@/lib/meridian/auth-messages.js";
 import { COUNTRY_CODES } from "@/lib/meridian/country-codes.js";
 import { OtpBoxes } from "@/components/auth/auth-forms.jsx";
@@ -127,9 +128,8 @@ export function ToolsPanel() {
   const [b, setB] = useState({ lat: "22.5726", lon: "88.3639" });
   const [out, setOut] = useState(null);
   const units = useMeridianStore((s) => s.units);
-  const calc = async (event) => {
+  const calc = (event) => {
     event.preventDefault();
-    const { distanceKm, bearingDeg } = await import("@/lib/meridian/geo-math.js");
     const la = Number(a.lat), lo = Number(a.lon), lb = Number(b.lat), lb2 = Number(b.lon);
     const valid = [a.lat, a.lon, b.lat, b.lon].every((v) => String(v).trim() !== "")
       && [la, lo, lb, lb2].every(Number.isFinite)

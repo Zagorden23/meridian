@@ -7,7 +7,7 @@ export const Route = createFileRoute("/api/flights/status")({
     handlers: apiRoute(
       {
         GET: async ({ url }) => {
-          const raw = url.searchParams.get("number") ?? "";
+          const raw = url.searchParams.get("number") ?? url.searchParams.get("flightNumber") ?? "";
           const { normalized } = parseFlightNumber(raw);
           try {
             const status = await getFlightStatus(normalized);

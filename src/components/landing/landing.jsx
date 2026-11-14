@@ -126,17 +126,24 @@ export function Landing() {
           Meridian
         </button>
         <div className="flex items-center gap-2">
-          {inApp ? (
+          {status === "AUTHENTICATED" ? (
             <button type="button" onClick={() => navigate({ to: "/app" })}
               className="rounded-full bg-accent px-4 py-1.5 text-xs font-semibold uppercase tracking-label text-accent-fg">
               Open Meridian
             </button>
           ) : (
             <>
-              <button type="button" onClick={guest}
-                className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
-                Guest
-              </button>
+              {status === "GUEST" ? (
+                <button type="button" onClick={() => navigate({ to: "/app" })}
+                  className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
+                  Open Meridian
+                </button>
+              ) : (
+                <button type="button" onClick={guest}
+                  className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
+                  Guest
+                </button>
+              )}
               <button type="button" onClick={signUp}
                 className="hidden rounded-full px-3 py-1.5 text-xs font-medium uppercase tracking-label text-muted hover:text-fg sm:block">
                 Create account

@@ -4,9 +4,9 @@
 // a divider, then the first-party methods (email code, password, phone) as a
 // single segmented control, and guest access last.
 //
-// Nothing is faked. A method the server cannot perform is never offered as if
-// it worked: in production it is left out; in development it is shown with the
-// setup it is waiting for. After sign-in the person returns to where they were
+// Nothing is faked. Every method is always listed, but one the server cannot
+// perform yet is never offered as if it worked: it says it isn't switched on
+// (production) or shows the setup it is waiting for (development). After sign-in the person returns to where they were
 // headed (`?returnTo=`), not to a fixed landing page.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
@@ -25,10 +25,26 @@ import { EmailCodeForm, PasswordForm, PhoneCodeForm } from "./auth-forms.jsx";
 const PROVIDER_ORDER = ["google", "apple", "microsoft", "amazon"];
 const CORE_PROVIDERS = new Set(["google", "apple", "microsoft"]);
 
+// Every method is always listed so visitors see the full set of ways in. One
+// the server cannot perform yet stays visible but says so plainly (`public`
+// in production, `needs` with the missing setup in development) — its submit
+// button is disabled, so nothing pretends to work.
 const METHODS = [
-  { id: "password", label: "Password", Icon: KeyRound, cap: "password", needs: "Password sign-in is unavailable right now." },
-  { id: "email", label: "Email code", Icon: Mail, cap: "emailOtp", needs: "Email codes need EMAIL_PROVIDER_KEY and EMAIL_FROM on the server." },
-  { id: "phone", label: "Phone", Icon: Phone, cap: "phoneOtp", needs: "Text message codes need SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_VERIFY_SERVICE_SID (or SMS_FROM) on the server." },
+  {
+    id: "password", label: "Password", Icon: KeyRound, cap: "password",
+    needs: "Password sign-in needs MONGODB_URI on the server.",
+    public: "Password sign-in is unavailable right now. Try again shortly, or continue as a guest.",
+  },
+  {
+    id: "email", label: "Email code", Icon: Mail, cap: "emailOtp",
+    needs: "Email codes need EMAIL_PROVIDER_KEY and EMAIL_FROM on the server.",
+    public: "Email codes aren't switched on for Meridian yet. Use another sign-in method for now, or continue as a guest.",
+  },
+  {
+    id: "phone", label: "Phone", Icon: Phone, cap: "phoneOtp",
+    needs: "Text message codes need SMS_PROVIDER_KEY, SMS_PROVIDER_SECRET and SMS_VERIFY_SERVICE_SID (or SMS_FROM) on the server.",
+    public: "Text message codes aren't switched on for Meridian yet. Use another sign-in method for now, or continue as a guest.",
+  },
 ];
 
 function ObservatoryVisual() {
@@ -81,8 +97,9 @@ export function AuthPage() {
   useEffect(() => { refreshCaps(); }, [refreshCaps]);
 
   // Already signed in (or arriving back from a provider) → straight through.
+  // Guests visiting /auth intentionally (to sign in or create an account) stay here.
   useEffect(() => {
-    if (status === "AUTHENTICATED" || status === "GUEST") navigate({ to: returnTo, replace: true });
+    if (status === "AUTHENTICATED") navigate({ to: returnTo, replace: true });
   }, [status, navigate, returnTo]);
 
   // Returning with the back button after starting a provider redirect restores
@@ -95,15 +112,24 @@ export function AuthPage() {
 
   const diagnostics = caps?.diagnostics === true;
   const methodOk = (m) => caps?.[m.cap]?.configured === true;
-  const methods = METHODS.filter((m) => diagnostics || methodOk(m));
+  // The sign-in service could not be reached → there is nothing to offer yet.
+  const methods = caps?.unreachable ? [] : METHODS;
   const tab = (picked && methods.some((m) => m.id === picked) ? picked : null)
     ?? methods.find(methodOk)?.id ?? methods[0]?.id ?? null;
   const active = methods.find((m) => m.id === tab) ?? null;
-  const unavailable = active && !methodOk(active) ? active.needs : null;
+  const unavailable = active && !methodOk(active) ? (diagnostics ? active.needs : active.public) : null;
 
-  const providers = useMemo(() => (caps?.oauth ?? [])
-    .filter((p) => p.configured || (caps?.diagnostics === true && CORE_PROVIDERS.has(p.id)))
-    .sort((a, b) => PROVIDER_ORDER.indexOf(a.id) - PROVIDER_ORDER.indexOf(b.id)), [caps]);
+  // Google, Apple and Microsoft are always listed; others only once configured.
+  const providers = useMemo(() => {
+    if (!caps || caps.unreachable) return [];
+    const byId = new Map((caps.oauth ?? []).map((p) => [p.id, p]));
+    for (const id of CORE_PROVIDERS) {
+      if (!byId.has(id)) byId.set(id, { id, configured: false, missing: [] });
+    }
+    return [...byId.values()]
+      .filter((p) => p.configured || CORE_PROVIDERS.has(p.id))
+      .sort((a, b) => PROVIDER_ORDER.indexOf(a.id) - PROVIDER_ORDER.indexOf(b.id));
+  }, [caps]);
 
   // Search params that survive in-page navigation (dismiss, mode toggle).
   const keep = (extra = {}) => ({ ...(returnTo !== "/app" ? { returnTo } : {}), ...extra });
@@ -223,6 +249,7 @@ export function AuthPage() {
                       pendingId={oauthPending}
                       onStart={startOAuth}
                       onRefresh={refreshCaps}
+                      diagnostics={diagnostics}
                     />
                     {providers.some((p) => p.configured) && (
                       <p className="mt-3 flex items-center gap-1.5 text-[11px] text-subtle">

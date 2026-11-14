@@ -52,6 +52,8 @@ function loadFile(root, name) {
   }
 }
 
+const loadedKeys = new Set();
+
 export function loadLocalEnv() {
   try {
     const root = process.cwd();
@@ -59,10 +61,23 @@ export function loadLocalEnv() {
     const local = loadFile(root, ".env.local");
     const merged = { ...base, ...local };
     let applied = 0;
+    for (const key of [...loadedKeys]) {
+      if (!(key in merged)) {
+        delete process.env[key];
+        loadedKeys.delete(key);
+      }
+    }
     for (const [key, value] of Object.entries(merged)) {
-      if (process.env[key] === undefined || process.env[key] === "") {
-        process.env[key] = value;
-        applied += 1;
+      if (key === "NODE_ENV" && import.meta.env?.DEV) continue;
+      if (process.env[key] === undefined || process.env[key] === "" || loadedKeys.has(key)) {
+        if (value !== "") {
+          process.env[key] = value;
+          loadedKeys.add(key);
+          applied += 1;
+        } else if (loadedKeys.has(key)) {
+          delete process.env[key];
+          loadedKeys.delete(key);
+        }
       }
     }
     return applied;

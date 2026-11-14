@@ -1,7 +1,7 @@
 // "Continue with …" rows. A configured provider is a live button; one that is
-// still waiting for credentials is never faked — in development it becomes a
-// collapsible setup guide, and in production it is simply not listed (the
-// parent filters it out).
+// still waiting for credentials is still listed but never faked — it expands
+// to say it isn't switched on yet (production) or to a setup guide
+// (development).
 import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -104,30 +104,49 @@ export function ProviderButtonsSkeleton({ rows = 3 }) {
   );
 }
 
-export function ProviderButtons({ providers, mode = "signin", busy, pendingId, onStart, onRefresh }) {
+function NotEnabledNote({ provider, label }) {
+  return (
+    <p id={`setup-${provider.id}`} className="border-t border-border/60 px-4 pb-4 pt-3 text-[12px] leading-relaxed text-muted">
+      {label} sign-in isn&rsquo;t switched on for Meridian yet. Use a password, an email code or your phone below — or continue as a guest.
+    </p>
+  );
+}
+
+export function ProviderButtons({ providers, mode = "signin", busy, pendingId, onStart, onRefresh, diagnostics = false }) {
   const [openSetup, setOpenSetup] = useState(null);
+  const action = mode === "signup" ? "Sign up with" : "Continue with";
   return (
     <ul className="space-y-2.5">
       {providers.map((p) => {
         const Mark = PROVIDER_MARKS[p.id];
         const label = PROVIDER_LABEL[p.id] ?? p.label ?? p.id;
         if (!p.configured) {
+          // Always listed, never faked: opening it explains why it can't be
+          // used yet (and, in development, exactly what to set up).
           const open = openSetup === p.id;
           return (
-            <li key={p.id} className="rounded-2xl bg-white/[0.025] shadow-border">
+            <li key={p.id} className="rounded-2xl bg-white/[0.03] shadow-border">
               <button
                 type="button"
                 onClick={() => setOpenSetup(open ? null : p.id)}
                 aria-expanded={open}
                 aria-controls={`setup-${p.id}`}
-                className={cn(ROW, "text-muted hover:text-fg")}
+                className={cn(ROW, "text-fg/75 hover:text-fg")}
               >
-                {Mark && <Mark className="size-5 shrink-0 opacity-50 grayscale" />}
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                <span className="shrink-0 text-[11px] uppercase tracking-label text-subtle">Setup needed</span>
+                {Mark && <Mark className="size-5 shrink-0 opacity-70" />}
+                <span className="min-w-0 flex-1 truncate">{action} {label}</span>
+                <span className="shrink-0 text-[11px] uppercase tracking-label text-subtle">
+                  {diagnostics ? (
+                    <><span className="sm:hidden">Setup</span><span className="hidden sm:inline">Setup needed</span></>
+                  ) : (
+                    <><span className="sm:hidden">Off</span><span className="hidden sm:inline">Not enabled</span></>
+                  )}
+                </span>
                 <ChevronDown className={cn("size-4 shrink-0 text-subtle transition-transform duration-200", open && "rotate-180")} aria-hidden />
               </button>
-              {open && <SetupGuide provider={p} onRefresh={onRefresh} />}
+              {open && (diagnostics
+                ? <SetupGuide provider={p} onRefresh={onRefresh} />
+                : <NotEnabledNote provider={p} label={label} />)}
             </li>
           );
         }
@@ -145,11 +164,7 @@ export function ProviderButtons({ providers, mode = "signin", busy, pendingId, o
                 ? <Loader2 className="size-5 shrink-0 animate-spin text-muted" aria-hidden />
                 : Mark && <Mark className="size-5 shrink-0" />}
               <span className="min-w-0 flex-1 truncate">
-                {waiting
-                  ? `Connecting to ${label}…`
-                  : mode === "signup"
-                    ? `Sign up with ${label}`
-                    : `Continue with ${label}`}
+                {waiting ? `Connecting to ${label}…` : `${action} ${label}`}
               </span>
             </button>
           </li>

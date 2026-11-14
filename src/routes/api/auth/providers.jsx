@@ -21,7 +21,7 @@ export const Route = createFileRoute("/api/auth/providers")({
     handlers: {
       async GET() {
         try {
-          const diagnostics = process.env.NODE_ENV !== "production";
+          const diagnostics = process.env["NODE_ENV"] !== "production";
           const hint = (configured, missing) => ({
             configured,
             ...(diagnostics ? { missing: configured ? [] : missing } : {}),

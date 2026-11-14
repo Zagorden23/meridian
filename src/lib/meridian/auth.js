@@ -8,7 +8,7 @@
 // OAuth: authorization-code + PKCE (S256) flow for Google / Microsoft / Apple /
 //   Amazon with signed state+nonce+codeVerifier cookies and JWKS id_token
 //   verification. Unconfigured providers fail closed with honest 503.
-import "./load-env.js";
+import { loadLocalEnv } from "./load-env.js";
 import {
   createHmac,
   createHash,
@@ -158,11 +158,24 @@ export function passwordConfigured() {
 }
 
 // --- Delivery (Resend for email, Twilio for SMS; dev-only local sandbox) ------
-export function emailConfigured() {
-  return Boolean(process.env.EMAIL_PROVIDER_KEY && process.env.EMAIL_FROM);
-}
+const envValue = (...keys) => {
+  for (const key of keys) {
+    const v = String(process.env[key] ?? "").trim();
+    if (v) return v;
+  }
+  return "";
+};
 
-const envValue = (key) => String(process.env[key] ?? "").trim();
+const emailApiKey = () => envValue("EMAIL_PROVIDER_KEY", "RESEND_API_KEY");
+const emailFromAddress = () => envValue("EMAIL_FROM", "RESEND_FROM");
+const smsAccountSid = () => envValue("SMS_PROVIDER_KEY", "TWILIO_ACCOUNT_SID");
+const smsAuthToken = () => envValue("SMS_PROVIDER_SECRET", "TWILIO_AUTH_TOKEN");
+const smsFromNumber = () => envValue("SMS_FROM", "TWILIO_FROM", "TWILIO_PHONE_NUMBER");
+
+export function emailConfigured() {
+  loadLocalEnv();
+  return Boolean(emailApiKey() && emailFromAddress());
+}
 
 /**
  * Twilio Verify service (`VA…`). When set, Twilio generates, delivers and
@@ -172,13 +185,16 @@ const envValue = (key) => String(process.env[key] ?? "").trim();
  * `SMS_FROM` (an E.164 number or a Messaging Service SID, `MG…`).
  */
 export function smsVerifyServiceSid() {
-  return envValue("SMS_VERIFY_SERVICE_SID");
+  return envValue("SMS_VERIFY_SERVICE_SID", "TWILIO_VERIFY_SERVICE_SID");
 }
 
 /** Server variables phone codes are still waiting for (empty when ready). */
 export function smsMissingEnv() {
-  const missing = ["SMS_PROVIDER_KEY", "SMS_PROVIDER_SECRET"].filter((key) => !envValue(key));
-  if (!smsVerifyServiceSid() && !envValue("SMS_FROM")) missing.push("SMS_VERIFY_SERVICE_SID or SMS_FROM");
+  loadLocalEnv();
+  const missing = [];
+  if (!smsAccountSid()) missing.push("SMS_PROVIDER_KEY");
+  if (!smsAuthToken()) missing.push("SMS_PROVIDER_SECRET");
+  if (!smsVerifyServiceSid() && !smsFromNumber()) missing.push("SMS_VERIFY_SERVICE_SID or SMS_FROM");
   return missing;
 }
 
@@ -200,11 +216,11 @@ async function providerErrorDetail(res) {
 /**
  * Local developer sandbox is strictly disabled in compiled production bundles
  * (where Vite replaces `import.meta.env.DEV` with `false`) and whenever
- * NODE_ENV is not `"development"` or cloud deployment vars are set.
+ * NODE_ENV is `"production"` or cloud deployment vars are set.
  */
 export function isDevOtpSandbox() {
   return Boolean(import.meta.env?.DEV)
-    && process.env.NODE_ENV === "development"
+    && process.env.NODE_ENV !== "production"
     && !process.env.VERCEL
     && !process.env.RENDER;
 }
@@ -245,11 +261,11 @@ export async function sendEmailOtp(email, code, { purpose = "auth" } = {}) {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${process.env.EMAIL_PROVIDER_KEY}`,
+        authorization: `Bearer ${emailApiKey()}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        from: process.env.EMAIL_FROM,
+        from: emailFromAddress(),
         to: email,
         subject: copy.subject,
         text: `${copy.heading}\n\nYour MERIDIAN verification code is ${code}. It expires in 5 minutes.\n\nIf you did not request this code, you can safely ignore this message.`,
@@ -284,7 +300,7 @@ export async function sendEmailOtp(email, code, { purpose = "auth" } = {}) {
 const TWILIO_VERIFY = "twilio-verify";
 
 function twilioHeaders() {
-  const basic = Buffer.from(`${envValue("SMS_PROVIDER_KEY")}:${envValue("SMS_PROVIDER_SECRET")}`).toString("base64");
+  const basic = Buffer.from(`${smsAccountSid()}:${smsAuthToken()}`).toString("base64");
   return { authorization: `Basic ${basic}`, "content-type": "application/x-www-form-urlencoded" };
 }
 
@@ -323,9 +339,9 @@ export async function sendPhoneOtp(phone, code, { purpose = "auth" } = {}) {
       }
       return { delivery: TWILIO_VERIFY, external: TWILIO_VERIFY };
     }
-    const from = envValue("SMS_FROM");
+    const from = smsFromNumber();
     const res = await twilioPost(
-      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(envValue("SMS_PROVIDER_KEY"))}/Messages.json`,
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(smsAccountSid())}/Messages.json`,
       {
         ...(/^MG[0-9a-fA-F]{32}$/.test(from) ? { MessagingServiceSid: from } : { From: from }),
         To: phone,
@@ -606,6 +622,7 @@ export function oauthRedirectUri(providerId, origin) {
 export { safeReturnTo };
 
 export function providerStatus() {
+  loadLocalEnv();
   return Object.entries(OAUTH_PROVIDERS).map(([id, p]) => {
     const missing = [];
     if (!process.env[p.idEnv]) missing.push(p.idEnv);

@@ -65,7 +65,11 @@ function FormError({ message }) {
 
 function Unavailable({ message }) {
   if (!message) return null;
-  return <p className="text-xs leading-relaxed text-subtle">{message}</p>;
+  return (
+    <p role="note" className="rounded-xl bg-surface-raised/70 px-3.5 py-2.5 text-[13px] leading-relaxed text-fg/85">
+      {message}
+    </p>
+  );
 }
 
 function SandboxNote({ show, channel }) {

@@ -33,7 +33,13 @@ const option = (name) => {
   return at !== -1 && args[at + 1] && !args[at + 1].startsWith("--") ? args[at + 1] : null;
 };
 const offline = flag("--offline");
-const env = (key) => String(process.env[key] ?? "").trim();
+const env = (...keys) => {
+  for (const key of keys) {
+    const v = String(process.env[key] ?? "").trim();
+    if (v) return v;
+  }
+  return "";
+};
 
 const results = []; // { name, state: "ready" | "off" | "problem", lines: [] }
 function report(name, state, ...lines) {
@@ -225,16 +231,20 @@ async function checkOAuth() {
 
 // --- Email (Resend) ------------------------------------------------------------
 function senderDomain() {
-  const from = env("EMAIL_FROM");
+  const from = env("EMAIL_FROM", "RESEND_FROM");
   const address = /<([^>]+)>/.exec(from)?.[1] ?? from;
   return address.includes("@") ? address.split("@").pop().toLowerCase() : null;
 }
 
 async function checkEmail() {
   const name = "Email codes + password reset";
+  const emailKey = env("EMAIL_PROVIDER_KEY", "RESEND_API_KEY");
+  const emailFrom = env("EMAIL_FROM", "RESEND_FROM");
   if (!emailConfigured()) {
-    const missing = ["EMAIL_PROVIDER_KEY", "EMAIL_FROM"].filter((key) => !env(key));
-    report(name, env("EMAIL_PROVIDER_KEY") ? "problem" : "off", `Not set: ${missing.join(", ")}`);
+    const missing = [];
+    if (!emailKey) missing.push("EMAIL_PROVIDER_KEY");
+    if (!emailFrom) missing.push("EMAIL_FROM");
+    report(name, emailKey ? "problem" : "off", `Not set: ${missing.join(", ")}`);
     return;
   }
   const domain = senderDomain();
@@ -247,7 +257,7 @@ async function checkEmail() {
     return;
   }
   const res = await http("https://api.resend.com/domains", {
-    headers: { authorization: `Bearer ${env("EMAIL_PROVIDER_KEY")}` },
+    headers: { authorization: `Bearer ${emailKey}` },
   });
   if (res.ok) {
     const domains = res.json?.data ?? [];
@@ -271,18 +281,19 @@ async function checkEmail() {
 // --- SMS (Twilio) --------------------------------------------------------------
 async function checkSms() {
   const name = "Phone codes";
+  const sid = env("SMS_PROVIDER_KEY", "TWILIO_ACCOUNT_SID");
+  const secret = env("SMS_PROVIDER_SECRET", "TWILIO_AUTH_TOKEN");
+  const from = env("SMS_FROM", "TWILIO_FROM", "TWILIO_PHONE_NUMBER");
   if (!smsConfigured()) {
-    const started = env("SMS_PROVIDER_KEY") || env("SMS_PROVIDER_SECRET") || env("SMS_FROM") || smsVerifyServiceSid();
+    const started = sid || secret || from || smsVerifyServiceSid();
     report(name, started ? "problem" : "off", `Not set: ${smsMissingEnv().join(", ")}`);
     return;
   }
-  const sid = env("SMS_PROVIDER_KEY");
   if (!/^AC[0-9a-fA-F]{32}$/.test(sid)) {
     report(name, "problem", "SMS_PROVIDER_KEY must be the Twilio Account SID (starts with AC, 34 characters).");
     return;
   }
   const verifySid = smsVerifyServiceSid();
-  const from = env("SMS_FROM");
   if (verifySid && !/^VA[0-9a-fA-F]{32}$/.test(verifySid)) {
     report(name, "problem", "SMS_VERIFY_SERVICE_SID must be a Twilio Verify Service SID (starts with VA).");
     return;
@@ -296,7 +307,7 @@ async function checkSms() {
     report(name, "ready", `Variables are set — sending through ${via} (credentials not tested: --offline).`);
     return;
   }
-  const basic = `Basic ${Buffer.from(`${sid}:${env("SMS_PROVIDER_SECRET")}`).toString("base64")}`;
+  const basic = `Basic ${Buffer.from(`${sid}:${secret}`).toString("base64")}`;
   const account = await http(`https://api.twilio.com/2010-04-01/Accounts/${sid}.json`, { headers: { authorization: basic } });
   if (!account.ok) {
     report(name, "problem", `Twilio rejected the Account SID / Auth Token (HTTP ${account.status}).`);

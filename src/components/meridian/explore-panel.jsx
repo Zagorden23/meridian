@@ -57,7 +57,7 @@ export function ExplorePanel() {
         );
         try {
           const res = await api.reverse(latitude, longitude);
-          const city = res.data?.city;
+          const city = res.data?.city ?? res.data?.nearestCity;
           if (city) flyTo("CITY", city, city.latitude, city.longitude);
           else {
             useGlobeStore.getState().focusPointOn(latitude, longitude);

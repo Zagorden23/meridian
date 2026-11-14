@@ -40,6 +40,7 @@ export function AmazonMark({ className }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const PROVIDER_MARKS = {
   google: GoogleMark,
   microsoft: MicrosoftMark,
